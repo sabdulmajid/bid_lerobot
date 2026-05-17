@@ -12,6 +12,7 @@ from lerobot.common.policies.polyppo_scaffold import (
     pairwise_l1_diversity,
     ppo_loss,
     polyppo_scores,
+    quality_gated_scores,
     value_loss,
 )
 
@@ -129,6 +130,39 @@ def test_polyppo_scores_require_matching_diversity_inputs():
         assert "code_ids" in str(exc)
     else:
         raise AssertionError("Expected missing code_ids to raise ValueError.")
+
+
+def test_quality_gated_scores_reward_good_diversity_and_penalize_bad_diversity():
+    returns = torch.tensor([[0.0, 1.0, 2.0]])
+    diversity = torch.tensor([[10.0, 10.0, 10.0]])
+
+    scores = quality_gated_scores(
+        returns,
+        diversity,
+        poly_lambda=0.1,
+        quality_gate="mean",
+        lambda_bad=0.2,
+    )
+
+    assert torch.allclose(scores, torch.tensor([[-2.0, 2.0, 3.0]]))
+
+
+def test_quality_gated_scores_uses_quantile_and_valid_mask_per_set():
+    returns = torch.tensor([[0.0, 1.0, 100.0], [2.0, 4.0, 8.0]])
+    diversity = torch.ones_like(returns)
+    valid_mask = torch.tensor([[True, True, False], [True, True, True]])
+
+    scores = quality_gated_scores(
+        returns,
+        diversity,
+        poly_lambda=0.5,
+        quality_gate="quantile",
+        quality_quantile=0.75,
+        valid_mask=valid_mask,
+    )
+
+    assert torch.allclose(scores[0], torch.tensor([0.0, 1.5, 100.0]))
+    assert torch.allclose(scores[1], torch.tensor([2.0, 4.0, 8.5]))
 
 
 def test_ppo_ratio_is_one_when_log_probs_are_unchanged():

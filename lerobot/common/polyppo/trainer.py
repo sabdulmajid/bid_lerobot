@@ -18,6 +18,7 @@ from lerobot.common.policies.polyppo_scaffold import (
     logprob_ratio,
     pairwise_l1_diversity,
     ppo_loss,
+    quality_gated_scores,
 )
 from lerobot.common.polyppo.rollout import collect_polyppo_rollouts
 from lerobot.common.polyppo.storage import load_rollout_artifact, write_train_artifact
@@ -129,6 +130,9 @@ def _train_mock_one_update(
         action_preds=action_preds,
         diversity_kind=poly_cfg.get("diversity_kind", "none"),
         poly_lambda=float(poly_cfg.get("lambda_div", 0.0)),
+        quality_gate=poly_cfg.get("quality_gate", "none"),
+        quality_quantile=float(poly_cfg.get("quality_quantile", 0.5)),
+        lambda_bad=float(poly_cfg.get("lambda_bad", 0.0)),
         valid_mask=valid_mask,
     )
 
@@ -286,6 +290,9 @@ def _train_vqbet_one_update(
         action_preds=action_preds,
         diversity_kind=poly_cfg.get("diversity_kind", "none"),
         poly_lambda=float(poly_cfg.get("lambda_div", 0.0)),
+        quality_gate=poly_cfg.get("quality_gate", "none"),
+        quality_quantile=float(poly_cfg.get("quality_quantile", 0.5)),
+        lambda_bad=float(poly_cfg.get("lambda_bad", 0.0)),
         valid_mask=valid_mask,
     )
     before = {name: param.detach().clone() for name, param in policy.named_parameters() if param.requires_grad}
@@ -419,20 +426,50 @@ def _assign_step_advantages(
     action_preds: torch.Tensor,
     diversity_kind: str,
     poly_lambda: float,
+    quality_gate: str = "none",
+    quality_quantile: float = 0.5,
+    lambda_bad: float = 0.0,
     valid_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    if diversity_kind == "none" or poly_lambda == 0.0:
+    base_kind = diversity_kind
+    if base_kind in {"none", "return_only"} or (poly_lambda == 0.0 and lambda_bad == 0.0):
         return assign_set_advantages(returns, normalize=True, valid_mask=valid_mask)
-    if diversity_kind == "code":
+
+    if base_kind.startswith("quality_bad_"):
+        base_kind = base_kind.removeprefix("quality_bad_")
+        if quality_gate == "none":
+            quality_gate = "mean"
+    elif base_kind.startswith("quality_"):
+        base_kind = base_kind.removeprefix("quality_")
+        if quality_gate == "none":
+            quality_gate = "mean"
+
+    if base_kind == "code":
         diversity = pairwise_l1_diversity(_masked_time_mean(code_ids.float(), valid_mask))
-    elif diversity_kind == "action":
+    elif base_kind == "action":
         diversity = pairwise_l1_diversity(_masked_time_mean(action_preds.float(), valid_mask))
+    elif base_kind == "endpoint":
+        diversity = pairwise_l1_diversity(_masked_time_last(action_preds.float(), valid_mask))
     else:
-        raise ValueError("diversity_kind must be one of {'none', 'code', 'action'}.")
-    return assign_set_advantages(
-        returns,
-        diversity=diversity.unsqueeze(-1).expand_as(returns),
+        raise ValueError(
+            "diversity_kind must be one of {'none', 'return_only', 'code', 'action', 'endpoint', "
+            "'quality_code', 'quality_action', 'quality_endpoint', 'quality_bad_code', "
+            "'quality_bad_action', 'quality_bad_endpoint'}."
+        )
+
+    attempt_returns = _masked_time_mean(returns.unsqueeze(-1), valid_mask).squeeze(-1)
+    attempt_valid = None if valid_mask is None else valid_mask.any(dim=2)
+    scores = quality_gated_scores(
+        attempt_returns,
+        diversity,
         poly_lambda=poly_lambda,
+        quality_gate=quality_gate,
+        quality_quantile=quality_quantile,
+        lambda_bad=lambda_bad,
+        valid_mask=attempt_valid,
+    )
+    return assign_set_advantages(
+        scores.unsqueeze(-1).expand_as(returns),
         valid_mask=valid_mask,
     )
 
@@ -444,6 +481,15 @@ def _masked_time_mean(values: torch.Tensor, valid_mask: torch.Tensor | None) -> 
     valid = valid_mask.reshape(expand_shape).to(dtype=values.dtype, device=values.device)
     count = valid.sum(dim=2).clamp_min(1.0)
     return (values * valid).sum(dim=2) / count
+
+
+def _masked_time_last(values: torch.Tensor, valid_mask: torch.Tensor | None) -> torch.Tensor:
+    if valid_mask is None:
+        return values[:, :, -1]
+    last_ix = valid_mask.long().sum(dim=2).clamp_min(1) - 1
+    gather_shape = (*last_ix.shape, 1, *([1] * (values.ndim - 3)))
+    gather_ix = last_ix.reshape(gather_shape).expand(*last_ix.shape, 1, *values.shape[3:])
+    return values.gather(2, gather_ix).squeeze(2)
 
 
 def _assert_finite_loss(loss_out) -> None:

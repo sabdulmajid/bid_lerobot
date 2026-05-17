@@ -56,10 +56,15 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
         raise ValueError("configs/polyppo stress eval requires at least one checkpoint entry.")
 
     rows = []
+    base_seed = int(run_cfg.get("seed", 120000))
+    same_seed_across_checkpoints = bool(stress_cfg.get("same_seed_across_checkpoints", False))
+    method_seed_stride = int(stress_cfg.get("method_seed_stride", 1000))
+    variant_seed_stride = int(stress_cfg.get("variant_seed_stride", 100))
     for method_ix, checkpoint_cfg in enumerate(checkpoints):
         method_name = checkpoint_cfg["name"]
-        checkpoint_path = Path(checkpoint_cfg["checkpoint_path"])
-        if not checkpoint_path.exists():
+        checkpoint_value = checkpoint_cfg.get("checkpoint_path")
+        checkpoint_path = Path(checkpoint_value) if checkpoint_value else None
+        if checkpoint_path is not None and not checkpoint_path.exists():
             raise FileNotFoundError(f"Missing checkpoint for {method_name}: {checkpoint_path}")
 
         hydra_cfg = load_pretrained_policy_hydra_config(pretrained_path, [])
@@ -69,8 +74,9 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
         hydra_cfg.eval.batch_size = int(stress_cfg.get("eval_batch_size", hydra_cfg.eval.n_episodes))
         hydra_cfg.eval.use_async_envs = False
         policy = make_policy(hydra_cfg=hydra_cfg, pretrained_policy_name_or_path=str(pretrained_path))
-        state = torch.load(checkpoint_path, map_location=device)
-        policy.load_state_dict(state["model_state"])
+        if checkpoint_path is not None:
+            state = torch.load(checkpoint_path, map_location=device)
+            policy.load_state_dict(state["model_state"])
         policy.to(device)
         policy.eval()
 
@@ -79,7 +85,9 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
             observation_noise_std = float(variant.get("observation_noise_std", 0.0))
             variant_dir = output_dir / method_name / variant_name
             variant_dir.mkdir(parents=True, exist_ok=True)
-            seed = int(run_cfg.get("seed", 120000)) + method_ix * 1000 + variant_ix * 100
+            seed = base_seed + variant_ix * variant_seed_stride
+            if not same_seed_across_checkpoints:
+                seed += method_ix * method_seed_stride
             hydra_cfg.seed = seed
             set_global_seed(seed)
             if hasattr(policy, "reset"):
@@ -121,8 +129,8 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
                 "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
                 "output_path": str(variant_dir),
                 "checkpoint": {
-                    "main_policy_path": str(checkpoint_path),
-                    "main_policy_hashes": checkpoint_hashes(checkpoint_path),
+                    "main_policy_path": str(checkpoint_path or pretrained_path),
+                    "main_policy_hashes": checkpoint_hashes(checkpoint_path or pretrained_path),
                     "reference_policy_path": None,
                     "reference_policy_hashes": [],
                 },
@@ -130,6 +138,7 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
                 "observation_noise_std": observation_noise_std,
                 "pass_at_k": list(pass_at_ks),
                 "pass_at_group_size": pass_at_group_size,
+                "same_seed_across_checkpoints": same_seed_across_checkpoints,
                 "stress_variant": variant,
                 "action_identity": (
                     "continuous env action from trained VQ-BeT; PPO update action identity is RVQ code ids"

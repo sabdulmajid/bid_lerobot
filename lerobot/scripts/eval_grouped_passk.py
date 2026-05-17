@@ -51,12 +51,15 @@ def eval_grouped_passk(config_path: str | Path) -> dict[str, Any]:
     pretrained_path = get_pretrained_policy_path(policy_cfg.get("path", "lerobot/vqbet_pusht"))
 
     checkpoints = cfg.get("checkpoints") or [{"name": "pretrained_vqbet", "checkpoint_path": None}]
+    base_seed = int(run_cfg.get("seed", 130000))
+    same_start_states = bool(eval_cfg.get("same_start_states_across_methods", True))
+    method_seed_stride = int(eval_cfg.get("method_seed_stride", 10000))
     rows = []
     for method_ix, checkpoint_cfg in enumerate(checkpoints):
         method_name = checkpoint_cfg["name"]
         method_dir = output_dir / method_name
         method_dir.mkdir(parents=True, exist_ok=True)
-        seed = int(run_cfg.get("seed", 130000)) + method_ix * 10000
+        seed = base_seed if same_start_states else base_seed + method_ix * method_seed_stride
         hydra_cfg = load_pretrained_policy_hydra_config(pretrained_path, [])
         hydra_cfg.device = str(device)
         hydra_cfg.use_amp = False
@@ -96,6 +99,7 @@ def eval_grouped_passk(config_path: str | Path) -> dict[str, Any]:
     summary = {
         "artifact_kind": "polyppo_grouped_passk_summary",
         "output_path": str(output_dir),
+        "same_start_states_across_methods": same_start_states,
         "rows": rows,
     }
     write_json(output_dir / "grouped_passk_summary.json", summary)
@@ -229,6 +233,7 @@ def _eval_one_policy_grouped(
             "n_start_states": n_starts,
             "attempts_per_start": attempts,
             "grouped_same_start": True,
+            "same_start_states_across_methods": bool(eval_cfg.get("same_start_states_across_methods", True)),
             "seed": seed,
             "start_state_hashes": start_hashes,
             "command": command_line(),

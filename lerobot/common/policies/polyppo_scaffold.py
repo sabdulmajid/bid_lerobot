@@ -96,21 +96,129 @@ def polyppo_scores(
     action_preds: Tensor | None = None,
     diversity_kind: str = "none",
     poly_lambda: float = 0.0,
+    quality_gate: str = "none",
+    quality_quantile: float = 0.5,
+    lambda_bad: float = 0.0,
+    valid_mask: Tensor | None = None,
 ) -> Tensor:
     """Build the per-attempt score used for set-normalized PolyPPO advantages."""
-    if diversity_kind == "none":
+    base_kind = diversity_kind
+    if base_kind in {"none", "return_only"}:
         return returns
-    if diversity_kind == "code":
+    if base_kind.startswith("quality_bad_"):
+        base_kind = base_kind.removeprefix("quality_bad_")
+        if quality_gate == "none":
+            quality_gate = "mean"
+    elif base_kind.startswith("quality_"):
+        base_kind = base_kind.removeprefix("quality_")
+        if quality_gate == "none":
+            quality_gate = "mean"
+
+    if base_kind == "code":
         if code_ids is None:
             raise ValueError("code_ids are required for code diversity.")
         diversity = pairwise_l1_diversity(code_ids.float())
-    elif diversity_kind == "action":
+    elif base_kind == "action":
         if action_preds is None:
             raise ValueError("action_preds are required for action diversity.")
         diversity = pairwise_l1_diversity(action_preds.float())
     else:
-        raise ValueError("diversity_kind must be one of {'none', 'code', 'action'}.")
-    return f_poly(returns, diversity, poly_lambda=poly_lambda)
+        raise ValueError(
+            "diversity_kind must be one of {'none', 'return_only', 'code', 'action', "
+            "'quality_code', 'quality_action', 'quality_bad_code', 'quality_bad_action'}."
+        )
+    return quality_gated_scores(
+        returns,
+        diversity,
+        poly_lambda=poly_lambda,
+        quality_gate=quality_gate,
+        quality_quantile=quality_quantile,
+        lambda_bad=lambda_bad,
+        valid_mask=valid_mask,
+    )
+
+
+def quality_gated_scores(
+    returns: Tensor,
+    diversity: Tensor,
+    *,
+    poly_lambda: float = 0.0,
+    quality_gate: str = "none",
+    quality_quantile: float = 0.5,
+    lambda_bad: float = 0.0,
+    valid_mask: Tensor | None = None,
+) -> Tensor:
+    """Add diversity only to high-quality attempts and optionally penalize bad diversity.
+
+    `returns` and `diversity` are per-attempt tensors with shape `(n_sets, n_attempts)`.
+    Quality is computed within each set so the objective rewards coverage among attempts
+    that are competitive for the same restored prefix instead of rewarding off-manifold
+    variety uniformly.
+    """
+    if returns.shape != diversity.shape:
+        raise ValueError("`returns` and `diversity` must have identical shape.")
+    if poly_lambda < 0.0:
+        raise ValueError("`poly_lambda` must be non-negative.")
+    if lambda_bad < 0.0:
+        raise ValueError("`lambda_bad` must be non-negative.")
+    if valid_mask is not None and valid_mask.shape != returns.shape:
+        raise ValueError("`valid_mask` must match return shape.")
+    if quality_gate not in {"none", "mean", "quantile"}:
+        raise ValueError("quality_gate must be one of {'none', 'mean', 'quantile'}.")
+    if not (0.0 <= quality_quantile <= 1.0):
+        raise ValueError("quality_quantile must be between 0 and 1.")
+
+    if quality_gate == "none":
+        good = torch.ones_like(returns, dtype=torch.bool)
+        bad = torch.zeros_like(good)
+    else:
+        threshold = _quality_threshold(
+            returns,
+            quality_gate=quality_gate,
+            quality_quantile=quality_quantile,
+            valid_mask=valid_mask,
+        )
+        good = returns >= threshold
+        bad = returns < threshold
+
+    if valid_mask is not None:
+        valid = valid_mask.to(dtype=torch.bool, device=returns.device)
+        good = good & valid
+        bad = bad & valid
+
+    score = returns + poly_lambda * diversity * good.to(dtype=returns.dtype)
+    if lambda_bad > 0.0:
+        score = score - lambda_bad * diversity * bad.to(dtype=returns.dtype)
+    return score
+
+
+def _quality_threshold(
+    returns: Tensor,
+    *,
+    quality_gate: str,
+    quality_quantile: float,
+    valid_mask: Tensor | None,
+) -> Tensor:
+    if quality_gate == "mean":
+        if valid_mask is None:
+            return returns.mean(dim=1, keepdim=True)
+        valid = valid_mask.to(dtype=returns.dtype, device=returns.device)
+        count = valid.sum(dim=1, keepdim=True).clamp_min(1.0)
+        return (returns * valid).sum(dim=1, keepdim=True) / count
+
+    thresholds = []
+    valid_bool = (
+        torch.ones_like(returns, dtype=torch.bool, device=returns.device)
+        if valid_mask is None
+        else valid_mask.to(dtype=torch.bool, device=returns.device)
+    )
+    for row, valid_row in zip(returns, valid_bool, strict=True):
+        valid_values = row[valid_row]
+        if valid_values.numel() == 0:
+            thresholds.append(row.new_tensor(0.0))
+        else:
+            thresholds.append(torch.quantile(valid_values.float(), quality_quantile).to(dtype=row.dtype))
+    return torch.stack(thresholds).view(returns.shape[0], 1)
 
 
 def assign_set_advantages(
@@ -153,7 +261,11 @@ def assign_polyppo_advantages(
     action_preds: Tensor | None = None,
     diversity_kind: str = "none",
     poly_lambda: float = 0.0,
+    quality_gate: str = "none",
+    quality_quantile: float = 0.5,
+    lambda_bad: float = 0.0,
     normalize: bool = True,
+    valid_mask: Tensor | None = None,
 ) -> Tensor:
     scores = polyppo_scores(
         returns,
@@ -161,8 +273,12 @@ def assign_polyppo_advantages(
         action_preds=action_preds,
         diversity_kind=diversity_kind,
         poly_lambda=poly_lambda,
+        quality_gate=quality_gate,
+        quality_quantile=quality_quantile,
+        lambda_bad=lambda_bad,
+        valid_mask=valid_mask,
     )
-    return assign_set_advantages(scores, normalize=normalize)
+    return assign_set_advantages(scores, normalize=normalize, valid_mask=valid_mask)
 
 
 def logprob_ratio(current_log_probs: Tensor, old_log_probs: Tensor) -> Tensor:

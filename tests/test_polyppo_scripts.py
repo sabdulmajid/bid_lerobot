@@ -5,6 +5,7 @@ from pathlib import Path
 
 import torch
 
+from lerobot.scripts import eval_grouped_passk as grouped_module
 from lerobot.scripts import eval_polyppo_checkpoints as eval_ckpt_module
 
 
@@ -93,6 +94,8 @@ policy:
   path: fake-policy
   temperature: 0.2
 checkpoints:
+  - name: direct
+    checkpoint_path:
   - name: method
     checkpoint_path: {checkpoint}
 stress:
@@ -102,6 +105,7 @@ stress:
       observation_noise_std: 0.03
   pass_at_k: [1, 2, 4]
   pass_at_group_size: 3
+  same_seed_across_checkpoints: true
   eval_episodes: 3
   eval_batch_size: 3
 """
@@ -123,7 +127,7 @@ stress:
             "per_episode": [
                 {
                     "episode_ix": ix,
-                    "seed": 11 + ix,
+                    "seed": kwargs["start_seed"] + ix,
                     "sum_reward": 1.0,
                     "max_reward": 1.0,
                     "success": ix == 0,
@@ -162,8 +166,77 @@ stress:
 
     summary = eval_ckpt_module.eval_polyppo_checkpoints(config)
 
+    assert len(calls) == 2
+    assert calls[0]["start_seed"] == calls[1]["start_seed"] == 11
     assert calls[0]["noise_level"] == 0.01
     assert calls[0]["observation_noise_std"] == 0.03
     assert calls[0]["pass_at_ks"] == (1, 2, 4)
     assert calls[0]["pass_at_group_size"] == 3
     assert summary["rows"][0]["pass_at_k"] == {"pass@1": 1.0, "pass@2": 1.0, "pass@4": 1.0}
+
+
+def test_eval_grouped_passk_pairs_start_seed_across_methods(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "checkpoint.pt"
+    torch.save({"model_state": {}}, checkpoint)
+    config = tmp_path / "grouped.yaml"
+    output_dir = tmp_path / "grouped_out"
+    config.write_text(
+        f"""
+run:
+  output_dir: {output_dir}
+  seed: 1234
+  device: cpu
+policy:
+  path: fake-policy
+checkpoints:
+  - name: direct
+    checkpoint_path:
+  - name: method
+    checkpoint_path: {checkpoint}
+grouped_passk:
+  n_start_states: 2
+  attempts_per_start: 4
+  same_start_states_across_methods: true
+  pass_at_k: [1, 2, 4]
+"""
+    )
+    calls = []
+
+    class _Policy(torch.nn.Module):
+        def reset(self):
+            return None
+
+    def _fake_eval_one_policy_grouped(**kwargs):
+        calls.append({"method_name": kwargs["method_name"], "seed": kwargs["seed"]})
+        return {
+            "aggregated": {
+                "success_rate": 1.0,
+                "pass_at_k": {"pass@1": 1.0, "pass@2": 1.0, "pass@4": 1.0},
+            }
+        }
+
+    monkeypatch.setattr(grouped_module, "get_pretrained_policy_path", lambda path: Path(path))
+    monkeypatch.setattr(
+        grouped_module,
+        "load_pretrained_policy_hydra_config",
+        lambda path, overrides: SimpleNamespace(
+            device="cpu",
+            use_amp=False,
+            seed=0,
+            eval=SimpleNamespace(use_async_envs=False),
+            policy=SimpleNamespace(bet_softmax_temperature=1.0),
+        ),
+    )
+    monkeypatch.setattr(grouped_module, "make_policy", lambda **kwargs: _Policy())
+    monkeypatch.setattr(grouped_module, "_eval_one_policy_grouped", _fake_eval_one_policy_grouped)
+    monkeypatch.setattr(
+        grouped_module,
+        "validate_artifact",
+        lambda *args, **kwargs: SimpleNamespace(ok=True, errors=[]),
+    )
+
+    summary = grouped_module.eval_grouped_passk(config)
+
+    assert [call["method_name"] for call in calls] == ["direct", "method"]
+    assert [call["seed"] for call in calls] == [1234, 1234]
+    assert summary["same_start_states_across_methods"] is True
