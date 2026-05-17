@@ -42,6 +42,7 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
     run_cfg = cfg.get("run", {})
     policy_cfg = cfg.get("policy", {})
     stress_cfg = cfg.get("stress", {})
+    pass_at_ks = tuple(int(k) for k in stress_cfg.get("pass_at_k", [1]))
     output_dir = Path(run_cfg.get("output_dir", "outputs/polyppo/stress_eval"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -72,6 +73,7 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
 
         for variant_ix, variant in enumerate(stress_cfg.get("variants", [])):
             variant_name = variant["name"]
+            observation_noise_std = float(variant.get("observation_noise_std", 0.0))
             variant_dir = output_dir / method_name / variant_name
             variant_dir.mkdir(parents=True, exist_ok=True)
             seed = int(run_cfg.get("seed", 120000)) + method_ix * 1000 + variant_ix * 100
@@ -95,6 +97,8 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
                     sampler=variant.get("sampler", "direct"),
                     temperature=float(policy_cfg.get("temperature", hydra_cfg.policy.bet_softmax_temperature)),
                     noise_level=float(variant.get("action_noise_std", 0.0)),
+                    observation_noise_std=observation_noise_std,
+                    pass_at_ks=pass_at_ks,
                 )
             finally:
                 env.close()
@@ -119,6 +123,8 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
                     "reference_policy_hashes": [],
                 },
                 "temperature": float(policy_cfg.get("temperature", hydra_cfg.policy.bet_softmax_temperature)),
+                "observation_noise_std": observation_noise_std,
+                "pass_at_k": list(pass_at_ks),
                 "stress_variant": variant,
                 "action_identity": (
                     "continuous env action from trained VQ-BeT; PPO update action identity is RVQ code ids"

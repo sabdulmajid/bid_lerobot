@@ -71,6 +71,45 @@ def test_benchmark_profile_rejects_one_episode_smoke(tmp_path):
     assert any("requires at least 20 episodes" in error for error in result.errors)
 
 
+def test_eval_validator_rejects_malformed_top_level_sections(tmp_path):
+    artifact = tmp_path / "eval"
+    _write_eval_artifact(artifact)
+    payload = json.loads((artifact / "eval_info.json").read_text())
+    payload["aggregated"] = []
+    (artifact / "eval_info.json").write_text(json.dumps(payload))
+
+    result = validate_artifact(artifact, profile="smoke")
+
+    assert not result.ok
+    assert any("aggregated must be a JSON object" in error for error in result.errors)
+
+
+def test_eval_validator_rejects_non_object_episode_rows(tmp_path):
+    artifact = tmp_path / "eval"
+    _write_eval_artifact(artifact)
+    payload = json.loads((artifact / "eval_info.json").read_text())
+    payload["per_episode"][0] = []
+    (artifact / "eval_info.json").write_text(json.dumps(payload))
+
+    result = validate_artifact(artifact, profile="smoke")
+
+    assert not result.ok
+    assert any("per_episode[0] must be a JSON object" in error for error in result.errors)
+
+
+def test_eval_validator_rejects_non_finite_per_episode_metrics(tmp_path):
+    artifact = tmp_path / "eval"
+    _write_eval_artifact(artifact)
+    payload = json.loads((artifact / "eval_info.json").read_text())
+    payload["per_episode"][0]["sum_reward"] = float("inf")
+    (artifact / "eval_info.json").write_text(json.dumps(payload))
+
+    result = validate_artifact(artifact, profile="smoke")
+
+    assert not result.ok
+    assert any("per_episode[0].sum_reward" in error for error in result.errors)
+
+
 def test_bidirectional_eval_rejects_missing_or_identical_reference_hashes(tmp_path):
     missing_ref = tmp_path / "missing_ref"
     _write_eval_artifact(missing_ref, sampler="bidirectional")

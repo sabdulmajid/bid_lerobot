@@ -92,13 +92,25 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
         }
 
     @torch.no_grad
-    def select_action(self, batch: dict[str, Tensor], AH_test, temperature: float = 1.0, sampled_centers = None) -> Tensor:
+    def select_action(
+        self,
+        batch: dict[str, Tensor],
+        AH_test=None,
+        temperature: float = 1.0,
+        sampled_centers=None,
+        *,
+        return_latent: bool = False,
+    ) -> Tensor:
         """Select a single action given environment observations.
 
         This method wraps `select_actions` in order to return one action at a time for execution in the
         environment. It works by managing the actions in a queue and only calling `select_actions` when the
         queue is empty.
         """
+        protocol_call = AH_test is None
+        if AH_test is None:
+            AH_test = 1
+
         batch = self.normalize_inputs(batch)
         batch["observation.images"] = torch.stack([batch[k] for k in self.expected_image_keys], dim=-4)
         # Note: It's important that this happens after stacking the images into a single key.
@@ -112,7 +124,12 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
         if len(self._queues["action"]) == 0:
             batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
             # actions_prior = self.vqbet(batch, rollout=True, temperature=temperature)[:, : self.config.action_chunk_size]
-            actions_prior, latent = self.vqbet(batch, rollout=True, temperature=temperature, sampled_centers = sampled_centers)
+            actions_prior, latent = self.vqbet(
+                batch,
+                rollout=True,
+                temperature=temperature,
+                sampled_centers=sampled_centers,
+            )
             actions_prior = actions_prior[:, : self.config.action_chunk_size]
             actions = actions_prior[:, : AH_test]
             # the dimension of returned action is (batch_size, action_chunk_size, action_dim)
@@ -121,7 +138,8 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
             # since the data in the action queue's dimension is (action_chunk_size, batch_size, action_dim), we transpose the action and fill the queue
             self._queues["action"].extend(actions.transpose(0, 1))
             self.actions_prior = actions_prior
-            self.latent_prior = latent
+            self.latent_prior = latent[:, 1:, :] if latent.shape[1] > 1 else None
+            latent_for_return = latent
         else:
             if self.actions_prior is None:
                 raise RuntimeError("actions_prior is not initialized.")
@@ -129,13 +147,17 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
                 raise RuntimeError("latent_prior is not initialized.")
             if self.latent_prior.shape[1] == 0:
                 raise ValueError("latent_prior has no remaining steps.")
-            latent = self.latent_prior
+            latent_for_return = self.latent_prior
             self.latent_prior = self.latent_prior[:, 1:, :]
 
         action = self._queues["action"].popleft()
         if self.latent_prior is not None and self.latent_prior.shape[1] == 0:
             self.latent_prior = None
-        return action, self.actions_prior, latent
+        if protocol_call:
+            return action
+        if return_latent:
+            return action, self.actions_prior, latent_for_return
+        return action, self.actions_prior
 
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         """Run the batch through the model and compute the loss for training or validation."""
@@ -607,12 +629,18 @@ class VQBeTHead(nn.Module):
 
             cbet_secondary_logits = self.map_to_cbet_preds_secondary_bin(
                 torch.cat(
-                    (x, F.one_hot(sampled_primary_centers, num_classes=self.config.vqvae_n_embed)),
+                    (
+                        x,
+                        F.one_hot(sampled_primary_centers, num_classes=self.config.vqvae_n_embed).to(
+                            dtype=x.dtype,
+                            device=x.device,
+                        ),
+                    ),
                     axis=1,
                 )
             )
             cbet_secondary_probs = torch.softmax(
-                cbet_secondary_logits / self.config.bet_softmax_temperature, dim=-1
+                cbet_secondary_logits / temperature, dim=-1
             )
             if sampled_centers is None:
                 sampled_secondary_centers = einops.rearrange(

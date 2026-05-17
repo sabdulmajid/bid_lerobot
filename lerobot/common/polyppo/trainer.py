@@ -94,13 +94,20 @@ def _train_mock_one_update(
     entropy = tensors["entropy"].to(device).float()
     code_ids = tensors["code_ids"].to(device)
     action_preds = tensors["action_preds"].to(device).float()
+    valid_mask = tensors.get("valid", torch.ones_like(old_log_probs, dtype=torch.bool)).to(device).bool()
+    kl_coef = float(train_cfg.get("kl_coef", 0.0))
+    base_log_probs = None
+    if kl_coef > 0.0:
+        if "base_log_probs" not in tensors:
+            raise ValueError("train.kl_coef > 0 requires rollout tensors['base_log_probs'].")
+        base_log_probs = tensors["base_log_probs"].to(device).float()
 
     model = TrainableRolloutTable(old_log_probs, old_values, entropy).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(train_cfg.get("lr", 1e-2)))
 
     current_log_probs, values, entropy_values = model()
     ratio = logprob_ratio(current_log_probs, old_log_probs)
-    ratio_error = float((ratio - 1.0).abs().max().item())
+    ratio_error = float((ratio[valid_mask] - 1.0).abs().max().item())
     _assert_close_ratio(ratio_error, float(train_cfg.get("ratio_tolerance", 1e-6)))
 
     advantages = _assign_step_advantages(
@@ -109,6 +116,7 @@ def _train_mock_one_update(
         action_preds=action_preds,
         diversity_kind=poly_cfg.get("diversity_kind", "none"),
         poly_lambda=float(poly_cfg.get("lambda_div", 0.0)),
+        valid_mask=valid_mask,
     )
     batch = RolloutBatch(
         returns=returns,
@@ -123,7 +131,9 @@ def _train_mock_one_update(
         value_coef=float(train_cfg.get("value_coef", 0.5)),
         entropy=entropy_values,
         entropy_coef=float(train_cfg.get("entropy_coef", 0.01)),
-        kl_coef=float(train_cfg.get("kl_coef", 0.0)),
+        base_log_probs=base_log_probs,
+        kl_coef=kl_coef,
+        valid_mask=valid_mask,
     )
     _assert_finite_loss(loss_out)
 
@@ -208,6 +218,8 @@ def _train_vqbet_one_update(
     returns = tensors["returns"].to(device).float()
     action_preds = tensors["action_preds"].to(device).float()
     code_ids_set = tensors["code_ids"].to(device)
+    valid_mask = tensors.get("valid", torch.ones_like(old_log_probs, dtype=torch.bool)).to(device).bool()
+    kl_coef = float(train_cfg.get("kl_coef", 0.0))
 
     out = _evaluate_rollout_codes(
         policy,
@@ -220,8 +232,24 @@ def _train_vqbet_one_update(
     current_values = out["value"].reshape_as(returns)
     current_entropy = out["entropy"].reshape_as(returns)
     ratio = logprob_ratio(current_log_probs, old_log_probs)
-    ratio_error = float((ratio - 1.0).abs().max().item())
+    ratio_error = float((ratio[valid_mask] - 1.0).abs().max().item())
     _assert_close_ratio(ratio_error, float(train_cfg.get("ratio_tolerance", 1e-4)))
+    base_log_probs = None
+    if kl_coef > 0.0:
+        base_policy = make_policy(hydra_cfg=hydra_cfg, pretrained_policy_name_or_path=str(pretrained_path))
+        base_policy.to(device)
+        base_policy.eval()
+        for param in base_policy.parameters():
+            param.requires_grad = False
+        with torch.no_grad():
+            base_out = _evaluate_rollout_codes(
+                base_policy,
+                obs_batch,
+                code_ids,
+                temperature=float(cfg.get("policy", {}).get("temperature", hydra_cfg.policy.bet_softmax_temperature)),
+                batch_size=int(train_cfg.get("recompute_batch_size", 1)),
+            )
+        base_log_probs = base_out["log_prob"].reshape_as(old_log_probs).detach()
 
     advantages = _assign_step_advantages(
         returns,
@@ -229,6 +257,7 @@ def _train_vqbet_one_update(
         action_preds=action_preds,
         diversity_kind=poly_cfg.get("diversity_kind", "none"),
         poly_lambda=float(poly_cfg.get("lambda_div", 0.0)),
+        valid_mask=valid_mask,
     )
     batch = RolloutBatch(
         returns=returns,
@@ -243,7 +272,9 @@ def _train_vqbet_one_update(
         value_coef=float(train_cfg.get("value_coef", 0.5)),
         entropy=current_entropy,
         entropy_coef=float(train_cfg.get("entropy_coef", 0.01)),
-        kl_coef=float(train_cfg.get("kl_coef", 0.0)),
+        base_log_probs=base_log_probs,
+        kl_coef=kl_coef,
+        valid_mask=valid_mask,
     )
     _assert_finite_loss(loss_out)
     before = {name: param.detach().clone() for name, param in policy.named_parameters() if param.requires_grad}
@@ -326,16 +357,31 @@ def _assign_step_advantages(
     action_preds: torch.Tensor,
     diversity_kind: str,
     poly_lambda: float,
+    valid_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if diversity_kind == "none" or poly_lambda == 0.0:
-        return assign_set_advantages(returns, normalize=True)
+        return assign_set_advantages(returns, normalize=True, valid_mask=valid_mask)
     if diversity_kind == "code":
-        diversity = pairwise_l1_diversity(code_ids.float().mean(dim=2))
+        diversity = pairwise_l1_diversity(_masked_time_mean(code_ids.float(), valid_mask))
     elif diversity_kind == "action":
-        diversity = pairwise_l1_diversity(action_preds.float().mean(dim=2))
+        diversity = pairwise_l1_diversity(_masked_time_mean(action_preds.float(), valid_mask))
     else:
         raise ValueError("diversity_kind must be one of {'none', 'code', 'action'}.")
-    return assign_set_advantages(returns, diversity=diversity.unsqueeze(-1).expand_as(returns), poly_lambda=poly_lambda)
+    return assign_set_advantages(
+        returns,
+        diversity=diversity.unsqueeze(-1).expand_as(returns),
+        poly_lambda=poly_lambda,
+        valid_mask=valid_mask,
+    )
+
+
+def _masked_time_mean(values: torch.Tensor, valid_mask: torch.Tensor | None) -> torch.Tensor:
+    if valid_mask is None:
+        return values.mean(dim=2)
+    expand_shape = (*valid_mask.shape, *([1] * (values.ndim - valid_mask.ndim)))
+    valid = valid_mask.reshape(expand_shape).to(dtype=values.dtype, device=values.device)
+    count = valid.sum(dim=2).clamp_min(1.0)
+    return (values * valid).sum(dim=2) / count
 
 
 def _assert_finite_loss(loss_out) -> None:

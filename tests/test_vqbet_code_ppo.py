@@ -2,10 +2,10 @@ import torch
 from torch import nn
 
 from lerobot.common.policies.vqbet.configuration_vqbet import VQBeTConfig
-from lerobot.common.policies.vqbet.modeling_vqbet import VQBeTHead, VQBeTModel
+from lerobot.common.policies.vqbet.modeling_vqbet import VQBeTHead, VQBeTModel, VQBeTPolicy
 
 
-def _small_config() -> VQBeTConfig:
+def _small_config(*, sequentially_select: bool = False) -> VQBeTConfig:
     return VQBeTConfig(
         n_obs_steps=2,
         n_action_pred_token=2,
@@ -25,7 +25,7 @@ def _small_config() -> VQBeTConfig:
         gpt_n_head=1,
         gpt_hidden_dim=8,
         mlp_hidden_dim=8,
-        sequentially_select=False,
+        sequentially_select=sequentially_select,
     )
 
 
@@ -67,6 +67,116 @@ def test_vqbet_head_recompute_uses_supplied_code_ids_without_resampling():
     assert torch.equal(first["sampled_centers"], fixed_ids)
     assert torch.equal(second["sampled_centers"], fixed_ids)
     assert torch.allclose(first["sampled_log_prob"], second["sampled_log_prob"])
+
+
+def test_vqbet_head_sequential_log_prob_uses_runtime_temperature():
+    cfg = _small_config(sequentially_select=True)
+    cfg.bet_softmax_temperature = 5.0
+    head = VQBeTHead(cfg)
+    batch_size = 2
+    n_tokens = 3
+    n_layers = head.vqvae_model.vqvae_num_layers
+    x = torch.randn(batch_size, n_tokens, cfg.gpt_output_dim)
+    fixed_ids = torch.randint(0, cfg.vqvae_n_embed, (batch_size * n_tokens, n_layers))
+    runtime_temperature = 0.3
+
+    out = head(x, temperature=runtime_temperature, sampled_centers=fixed_ids)
+    manual = torch.log_softmax(out["cbet_logits"] / runtime_temperature, dim=-1)
+    manual = manual.gather(-1, fixed_ids.unsqueeze(-1)).squeeze(-1).sum(dim=-1)
+
+    assert torch.equal(out["sampled_centers"], fixed_ids)
+    assert torch.allclose(out["sampled_log_prob"], manual)
+
+
+class _IdentityBatch(nn.Module):
+    def forward(self, batch):
+        return batch
+
+
+class _FakeVqvae(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("discretized", torch.tensor(True))
+
+
+class _FakeActionHead(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.vqvae_model = _FakeVqvae()
+
+
+class _FakeVQBeT(nn.Module):
+    def __init__(self, action_chunk_size: int, action_dim: int, n_layers: int = 2):
+        super().__init__()
+        self.action_head = _FakeActionHead()
+        self.action_chunk_size = action_chunk_size
+        self.action_dim = action_dim
+        self.n_layers = n_layers
+        self.calls = 0
+
+    def forward(self, batch, rollout=False, temperature=1.0, sampled_centers=None):
+        del rollout, temperature, sampled_centers
+        self.calls += 1
+        batch_size = batch["observation.state"].shape[0]
+        actions = torch.arange(
+            batch_size * self.action_chunk_size * self.action_dim,
+            dtype=torch.float32,
+        ).reshape(batch_size, self.action_chunk_size, self.action_dim)
+        latent = torch.arange(
+            batch_size * self.action_chunk_size * self.n_layers,
+            dtype=torch.long,
+        ).reshape(batch_size, self.action_chunk_size, self.n_layers)
+        return actions, latent
+
+
+def _fake_policy() -> VQBeTPolicy:
+    cfg = _small_config()
+    policy = VQBeTPolicy(cfg)
+    policy.normalize_inputs = _IdentityBatch()
+    policy.unnormalize_outputs = _IdentityBatch()
+    policy.vqbet = _FakeVQBeT(cfg.action_chunk_size, cfg.output_shapes["action"][0])
+    policy.reset()
+    return policy
+
+
+def _single_observation() -> dict[str, torch.Tensor]:
+    cfg = _small_config()
+    return {
+        "observation.state": torch.zeros(1, cfg.input_shapes["observation.state"][0]),
+        "observation.image": torch.zeros(1, *cfg.input_shapes["observation.image"]),
+    }
+
+
+def test_vqbet_select_action_protocol_returns_tensor_for_direct_call():
+    policy = _fake_policy()
+
+    action = policy.select_action(_single_observation())
+
+    assert isinstance(action, torch.Tensor)
+    assert action.shape == (1, policy.config.output_shapes["action"][0])
+
+
+def test_vqbet_select_action_metadata_mode_preserves_chunk_and_advances_latent_prior():
+    policy = _fake_policy()
+    first_action, first_chunk, first_latent = policy.select_action(
+        _single_observation(),
+        AH_test=2,
+        temperature=0.5,
+        return_latent=True,
+    )
+    second_action, second_chunk, second_latent = policy.select_action(
+        _single_observation(),
+        AH_test=2,
+        temperature=0.5,
+        return_latent=True,
+    )
+
+    assert policy.vqbet.calls == 1
+    assert first_action.shape == second_action.shape == (1, policy.config.output_shapes["action"][0])
+    assert torch.equal(first_chunk, second_chunk)
+    assert first_latent.shape == (1, policy.config.action_chunk_size, 2)
+    assert second_latent.shape == (1, 1, 2)
+    assert policy.latent_prior is None
 
 
 class _TinyRgbEncoder(nn.Module):

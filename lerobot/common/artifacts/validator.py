@@ -138,6 +138,12 @@ def _validate_eval_artifact(path: Path, profile: str) -> ValidationResult:
     if not isinstance(per_episode, list):
         result.reject("per_episode must be a list")
         return result
+    if not isinstance(aggregated, dict):
+        result.reject("aggregated must be a JSON object")
+        return result
+    if not isinstance(metadata, dict):
+        result.reject("run_metadata must be a JSON object")
+        return result
 
     n_episodes = int(metadata.get("n_episodes", len(per_episode)))
     min_episodes = {"smoke": 1, "benchmark": 20, "final": 500}.get(profile, 20)
@@ -148,6 +154,9 @@ def _validate_eval_artifact(path: Path, profile: str) -> ValidationResult:
 
     required_episode_keys = {"episode_ix", "seed", "sum_reward", "max_reward", "success", "num_steps"}
     for ix, episode in enumerate(per_episode):
+        if not isinstance(episode, dict):
+            result.reject(f"per_episode[{ix}] must be a JSON object")
+            continue
         missing = required_episode_keys.difference(episode)
         if missing:
             result.reject(f"episode {ix} missing keys: {sorted(missing)}")
@@ -157,7 +166,7 @@ def _validate_eval_artifact(path: Path, profile: str) -> ValidationResult:
         if isinstance(seed_manifest, list):
             if len(seed_manifest) < n_episodes:
                 result.reject(f"seed_manifest length {len(seed_manifest)} is shorter than n_episodes {n_episodes}")
-            seeds = [episode.get("seed") for episode in per_episode]
+            seeds = [episode.get("seed") for episode in per_episode if isinstance(episode, dict)]
             if len(set(seeds)) != len(seeds):
                 result.reject("per_episode seeds contain duplicates")
         else:
@@ -183,7 +192,7 @@ def _validate_eval_artifact(path: Path, profile: str) -> ValidationResult:
         if missing:
             result.reject(f"poly_bid missing sampler diagnostics: {sorted(missing)}")
 
-    _validate_finite_metrics(result, aggregated)
+    _validate_finite_metrics(result, {"aggregated": aggregated, "per_episode": per_episode})
     return result
 
 

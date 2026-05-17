@@ -137,14 +137,15 @@ def _collect_mock_rollouts(
     valid = torch.ones_like(old_log_probs, dtype=torch.bool)
     returns = final_returns.unsqueeze(-1).expand_as(old_log_probs)
 
-    code_diversity = pairwise_l1_diversity(code_ids.float().mean(dim=2))
-    action_diversity = pairwise_l1_diversity(action_preds.float().mean(dim=2))
+    code_diversity = pairwise_l1_diversity(_masked_time_mean(code_ids.float(), valid))
+    action_diversity = pairwise_l1_diversity(_masked_time_mean(action_preds.float(), valid))
     advantages = _assign_step_advantages(
         returns,
         code_ids=code_ids,
         action_preds=action_preds,
         diversity_kind=cfg.get("polyppo", {}).get("diversity_kind", "code"),
         poly_lambda=float(cfg.get("polyppo", {}).get("lambda_div", 0.1)),
+        valid_mask=valid,
     )
 
     tensors = {
@@ -326,14 +327,15 @@ def _collect_pusht_rollouts(
     obs_state_tensor = _pad_nested_tensors(obs_states, (n_sets, n_attempts, horizon))
     obs_image_tensor = _pad_nested_tensors(obs_images, (n_sets, n_attempts, horizon))
     returns = rewards.sum(dim=-1, keepdim=True).expand_as(rewards)
-    code_diversity = pairwise_l1_diversity(code_tensor.float().mean(dim=2))
-    action_diversity = pairwise_l1_diversity(action_tensor.float().mean(dim=2))
+    code_diversity = pairwise_l1_diversity(_masked_time_mean(code_tensor.float(), valid))
+    action_diversity = pairwise_l1_diversity(_masked_time_mean(action_tensor.float(), valid))
     advantages = _assign_step_advantages(
         returns,
         code_ids=code_tensor,
         action_preds=action_tensor,
         diversity_kind=cfg.get("polyppo", {}).get("diversity_kind", "code"),
         poly_lambda=float(cfg.get("polyppo", {}).get("lambda_div", 0.1)),
+        valid_mask=valid,
     )
     tensors = {
         "returns": returns,
@@ -416,16 +418,31 @@ def _assign_step_advantages(
     action_preds: torch.Tensor,
     diversity_kind: str,
     poly_lambda: float,
+    valid_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if diversity_kind == "none" or poly_lambda == 0.0:
-        return assign_set_advantages(returns, normalize=True)
+        return assign_set_advantages(returns, normalize=True, valid_mask=valid_mask)
     if diversity_kind == "code":
-        diversity = pairwise_l1_diversity(code_ids.float().mean(dim=2))
+        diversity = pairwise_l1_diversity(_masked_time_mean(code_ids.float(), valid_mask))
     elif diversity_kind == "action":
-        diversity = pairwise_l1_diversity(action_preds.float().mean(dim=2))
+        diversity = pairwise_l1_diversity(_masked_time_mean(action_preds.float(), valid_mask))
     else:
         raise ValueError("diversity_kind must be one of {'none', 'code', 'action'}.")
-    return assign_set_advantages(returns, diversity=diversity.unsqueeze(-1).expand_as(returns), poly_lambda=poly_lambda)
+    return assign_set_advantages(
+        returns,
+        diversity=diversity.unsqueeze(-1).expand_as(returns),
+        poly_lambda=poly_lambda,
+        valid_mask=valid_mask,
+    )
+
+
+def _masked_time_mean(values: torch.Tensor, valid_mask: torch.Tensor | None) -> torch.Tensor:
+    if valid_mask is None:
+        return values.mean(dim=2)
+    expand_shape = (*valid_mask.shape, *([1] * (values.ndim - valid_mask.ndim)))
+    valid = valid_mask.reshape(expand_shape).to(dtype=values.dtype, device=values.device)
+    count = valid.sum(dim=2).clamp_min(1.0)
+    return (values * valid).sum(dim=2) / count
 
 
 def _sample_code_action(policy, batch: dict[str, torch.Tensor], device: torch.device, temperature: float):

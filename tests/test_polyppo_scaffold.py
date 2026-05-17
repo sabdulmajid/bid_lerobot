@@ -1,4 +1,5 @@
 import torch
+import pytest
 
 from lerobot.common.policies.polyppo_scaffold import (
     RolloutBatch,
@@ -66,6 +67,16 @@ def test_set_advantages_sum_to_zero_per_set():
     advantages = assign_set_advantages(returns, normalize=False)
 
     assert torch.allclose(advantages.sum(dim=1), torch.zeros(4), atol=1e-6)
+
+
+def test_set_advantages_masked_sum_to_zero_per_set_and_pads_are_zero():
+    returns = torch.tensor([[1.0, 2.0, 100.0], [4.0, 8.0, 12.0]])
+    valid_mask = torch.tensor([[True, True, False], [True, False, True]])
+
+    advantages = assign_set_advantages(returns, normalize=False, valid_mask=valid_mask)
+
+    assert torch.equal(advantages[~valid_mask], torch.zeros_like(advantages[~valid_mask]))
+    assert torch.allclose((advantages * valid_mask).sum(dim=1), torch.zeros(2), atol=1e-6)
 
 
 def test_lambda_zero_matches_ppo_without_diversity_advantages():
@@ -148,6 +159,23 @@ def test_clipped_ppo_surrogate_loss_on_toy_n4_n8_data():
     assert torch.allclose(loss, expected)
 
 
+def test_clipped_ppo_surrogate_loss_valid_mask_excludes_padded_steps():
+    old = torch.zeros(1, 3)
+    current = torch.tensor([[0.0, 0.1, 10.0]])
+    advantages = torch.tensor([[1.0, 2.0, 1000.0]])
+    valid_mask = torch.tensor([[True, True, False]])
+    clip_ratio = 0.2
+
+    loss = clipped_ppo_surrogate_loss(current, old, advantages, clip_ratio, valid_mask=valid_mask)
+    ratio = torch.exp(current[:, :2] - old[:, :2])
+    expected = -torch.minimum(
+        ratio * advantages[:, :2],
+        torch.clamp(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio) * advantages[:, :2],
+    ).mean()
+
+    assert torch.allclose(loss, expected)
+
+
 def test_value_loss_and_kl_penalty_smoke_for_n4_n8():
     n_sets = 4
     n_attempts = 8
@@ -165,6 +193,17 @@ def test_value_loss_and_kl_penalty_smoke_for_n4_n8():
 
     expected_kl = torch.mean(old_log_probs - current_log_probs)
     assert torch.allclose(kl_penalty(old_log_probs, current_log_probs), expected_kl)
+
+
+def test_value_loss_and_kl_penalty_respect_valid_mask():
+    values = torch.tensor([[1.0, 10.0, 1000.0]])
+    returns = torch.tensor([[2.0, 12.0, -1000.0]])
+    old_log_probs = torch.tensor([[0.0, -0.1, 99.0]])
+    current_log_probs = torch.tensor([[0.2, -0.3, -99.0]])
+    valid_mask = torch.tensor([[True, True, False]])
+
+    assert torch.allclose(value_loss(values, returns, valid_mask=valid_mask), torch.tensor(2.5))
+    assert torch.allclose(kl_penalty(old_log_probs, current_log_probs, valid_mask=valid_mask), torch.tensor(0.0))
 
 
 def test_ppo_loss_combines_policy_value_entropy_and_base_kl():
@@ -199,3 +238,17 @@ def test_ppo_loss_combines_policy_value_entropy_and_base_kl():
     assert torch.allclose(out.total_loss, expected)
     assert torch.isfinite(out.approx_kl)
     assert torch.isfinite(out.clip_fraction)
+
+
+def test_ppo_loss_requires_base_log_probs_when_kl_coef_positive():
+    returns = torch.randn(2, 3)
+    batch = RolloutBatch(
+        returns=returns,
+        old_log_probs=torch.zeros_like(returns),
+        values=torch.zeros_like(returns),
+        current_log_probs=torch.zeros_like(returns),
+    )
+    advantages = assign_set_advantages(returns)
+
+    with pytest.raises(ValueError, match="base_log_probs"):
+        ppo_loss(batch, advantages, clip_ratio=0.2, kl_coef=0.1)

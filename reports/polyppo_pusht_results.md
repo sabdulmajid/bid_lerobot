@@ -20,10 +20,12 @@ Headline claim: not filled. Current runs are smoke and triage scale only.
 | Real set-attempt rollout | 4 sets x 3 attempts | pass@1/2/4/8 all 0.0, avg code diversity 1.0521, avg action diversity 1.6109 | passed smoke |
 | PPO no diversity one update | 10 post-update eval episodes | pass@1 0.50, avg max overlap 0.8478 | passed smoke |
 | PolyPPO code diversity one update | 10 post-update eval episodes | pass@1 0.50, avg max overlap 0.8478 | passed smoke |
-| PPO no diversity stress standard | 20 episodes | pass@1 0.55, avg max overlap 0.7886 | passed benchmark |
-| PPO no diversity stress action noise | 20 episodes | pass@1 0.70, avg max overlap 0.8881 | passed benchmark |
-| PolyPPO code diversity stress standard | 20 episodes | pass@1 0.60, avg max overlap 0.8279 | passed benchmark |
-| PolyPPO code diversity stress action noise | 20 episodes | pass@1 0.65, avg max overlap 0.8718 | passed benchmark |
+| PPO no diversity stress standard | 20 episodes | pass@1/2/4/8 0.55, avg max overlap 0.7886 | passed benchmark |
+| PPO no diversity stress action noise | 20 episodes | pass@1/2/4/8 0.70, avg max overlap 0.8881 | passed benchmark |
+| PPO no diversity stress observation noise | 20 episodes | pass@1/2/4/8 0.55, avg max overlap 0.8306 | passed benchmark |
+| PolyPPO code diversity stress standard | 20 episodes | pass@1/2/4/8 0.60, avg max overlap 0.8279 | passed benchmark |
+| PolyPPO code diversity stress action noise | 20 episodes | pass@1/2/4/8 0.65, avg max overlap 0.8718 | passed benchmark |
+| PolyPPO code diversity stress observation noise | 20 episodes | pass@1/2/4/8 0.35, avg max overlap 0.7305 | passed benchmark |
 
 The stress numbers are not statistically strong. The 95% CIs are wide at 20 episodes. They are useful as a wiring and triage signal only.
 
@@ -34,6 +36,10 @@ The stress numbers are not statistically strong. The 95% CIs are wide at 20 epis
 - Recomputed old log-probs match exactly when replayed with the same microbatch path.
 - PPO ratio before update is exactly 1.0 for PPO and PolyPPO one-update runs.
 - Value-head overfit, PushT state restore/prefix replay, set-normalized advantages, and `lambda_div=0` equivalence are covered by focused tests.
+- `select_action(batch)` keeps the public policy protocol tensor return; VQ-BeT sampler metadata is opt-in.
+- Padded rollout steps are masked in PPO losses, value losses, KL, entropy, advantage normalization, and diversity summaries.
+- `train.kl_coef > 0` now requires base log-probs; real VQ-BeT training recomputes a frozen base-policy KL target.
+- Eval artifact validation type-checks metadata/aggregates and rejects non-finite per-episode metrics.
 - Real rollout artifacts store set ids, attempt ids, prefix hashes, code ids, old log-probs, values, entropy, rewards, done/success, max overlap, returns, action/code diversity, checkpoint hashes, command, git metadata, GPU metadata, and seed manifest.
 
 ## Commands
@@ -45,19 +51,19 @@ python -m lerobot.scripts.eval -p lerobot/vqbet_pusht \
   --sampler direct --temperature 0.1 \
   eval.n_episodes=100 eval.batch_size=50 device=cuda use_amp=false
 
-CUDA_VISIBLE_DEVICES=1 PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH \
+PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH \
 python -m lerobot.scripts.collect_polyppo_rollouts \
   --config configs/polyppo/pusht_rollout_smoke.yaml
 
-CUDA_VISIBLE_DEVICES=1 PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH \
+PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH \
 python -m lerobot.scripts.train_polyppo \
   --config configs/polyppo/pusht_one_update.yaml
 
-CUDA_VISIBLE_DEVICES=1 PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH \
+PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH \
 python -m lerobot.scripts.train_polyppo \
   --config configs/polyppo/pusht_one_update_polyppo_code.yaml
 
-CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH \
+PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH \
 python -m lerobot.scripts.eval_polyppo_checkpoints \
   --config configs/polyppo/pusht_stress_eval.yaml
 
@@ -67,7 +73,8 @@ python -m lerobot.scripts.summarize_polyppo_results --output-dir outputs/polyppo
 
 ## Interpretation
 
-- PolyPPO code-diversity one update did not clearly beat PPO no-diversity at matched triage compute. It is +0.05 pass@1 on 20-episode standard stress and -0.05 pass@1 under action noise, both inside wide uncertainty.
+- PolyPPO code-diversity one update did not clearly beat PPO no-diversity at matched triage compute. It is +0.05 pass@1 on 20-episode standard stress, -0.05 under action noise, and -0.20 under observation noise.
+- This triggers the kill criteria for scaling this exact configuration. Do not run 500+ episodes for this checkpoint pair; diagnose and ablate first.
 - The action-noise improvement for both methods is likely seed/noise interaction at small N, not a reliable robustness claim.
 - The rollout smoke uses only 4 prefix sets x 3 attempts and short continuation horizon; it proves infrastructure, not learning quality.
 - The old log-prob mismatch blocker was real and fixed by using the same one-sample recompute path as online collection for the hard ratio gate.
@@ -78,12 +85,12 @@ python -m lerobot.scripts.summarize_polyppo_results --output-dir outputs/polyppo
 - Real small sweep over at least PPO no-diversity, PPO+KL/BC regularization, PolyPPO return-only, PolyPPO code diversity, and PolyPPO action diversity.
 - Larger rollout config: at least 32 prefix sets x 8 attempts for candidate configs.
 - 100 episode paired eval for promising configs and 200-500 paired episodes for winners.
-- Stress variants beyond action noise: observation noise and held-out/randomized starts.
+- Stress variants beyond standard/action/observation noise: held-out/randomized starts and reduced reactivity.
 - BID and PolySelect inference baselines; they remain baselines and should not block PolyPPO training.
 
 ## Next Run
 
-Implement the small sweep as real repeated training, then run 50 paired eval episodes for:
+Diagnose the observation-noise regression and then implement the small sweep as real repeated training. Run 50 paired eval episodes for:
 
 1. PPO no diversity.
 2. PPO + KL-to-base.

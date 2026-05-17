@@ -34,6 +34,34 @@ from lerobot.common.utils.utils import get_safe_torch_device, init_hydra_config,
 from lerobot.common.samplers.single import coherence_sampler, random_sampler, ema_sampler
 from lerobot.common.samplers.multi import contrastive_sampler, bidirectional_sampler, bidirectional_sampler_latent
 
+
+def _direct_action_dict(policy: Policy, observation: dict[str, Tensor], ah_test: int, temperature: float) -> dict:
+    if hasattr(policy, "vqbet"):
+        selected = policy.select_action(observation, ah_test, temperature)
+    else:
+        selected = policy.select_action(observation)
+    action = selected[0] if isinstance(selected, tuple) else selected
+    action_pred = selected[1] if isinstance(selected, tuple) and len(selected) > 1 else action.unsqueeze(1)
+    return {"action": action.unsqueeze(1), "action_pred": action_pred}
+
+
+def _add_observation_noise(
+    observation: dict[str, Tensor],
+    std: float,
+    generator: torch.Generator,
+) -> dict[str, Tensor]:
+    if std <= 0.0:
+        return observation
+    out = {}
+    for key, value in observation.items():
+        if torch.is_floating_point(value):
+            noise = torch.randn(value.shape, generator=generator, dtype=value.dtype, device=value.device) * std
+            out[key] = value + noise
+        else:
+            out[key] = value
+    return out
+
+
 def rollout(
     env: gym.vector.VectorEnv,
     policy: Policy,
@@ -47,7 +75,8 @@ def rollout(
     reference_policy: Policy | None = None,
     temperature: float = 1.0,
     noise_level: float = 0.0,
-    env_stochasticity_seed: int = 1
+    observation_noise_std: float = 0.0,
+    env_stochasticity_seed: int = 1,
 ) -> dict:
     """Run a batched policy rollout once through a batch of environments.
 
@@ -112,9 +141,11 @@ def rollout(
     count = 0
     noise_count = 0
     noise_interval = 5
+    obs_noise_generator = torch.Generator().manual_seed(int(env_stochasticity_seed or 0))
     while not np.all(done):
         # Numpy array to tensor and changing dictionary keys to LeRobot policy format.
         observation = preprocess_observation(observation)
+        observation = _add_observation_noise(observation, observation_noise_std, obs_noise_generator)
         if return_observations:
             all_observations.append(deepcopy(observation))
 
@@ -122,10 +153,7 @@ def rollout(
         with torch.inference_mode():
             # action = policy.select_action(observation)
             if sampler == "direct":
-                selected = policy.select_action(observation, ah_test, temperature)
-                action = selected[0] if isinstance(selected, tuple) else selected
-                action_pred = selected[1] if isinstance(selected, tuple) and len(selected) > 1 else action.unsqueeze(1)
-                action_dict = {"action": action.unsqueeze(1), "action_pred": action_pred}
+                action_dict = _direct_action_dict(policy, observation, ah_test, temperature)
             if sampler == "coherence":
                 action_dict = coherence_sampler(policy, prior, observation, count, ah_test, temperature=temperature)
             if sampler == "random":
@@ -269,7 +297,9 @@ def eval_policy(
     ah_test: int = 1,
     reference_policy: torch.nn.Module | None = None,
     temperature: float = 1.0,
-    noise_level: float = 0.0
+    noise_level: float = 0.0,
+    observation_noise_std: float = 0.0,
+    pass_at_ks: tuple[int, ...] = (1,),
 ) -> dict:
     """
     Args:
@@ -353,7 +383,8 @@ def eval_policy(
 
             temperature=temperature,
             noise_level=noise_level,
-            env_stochasticity_seed=start_seed
+            observation_noise_std=observation_noise_std,
+            env_stochasticity_seed=start_seed,
         )
 
         # Figure out where in each rollout sequence the first done condition was encountered (results after
@@ -455,7 +486,7 @@ def eval_policy(
             "avg_max_reward": float(np.nanmean(max_rewards[:n_episodes])),
             "pc_success": float(np.nanmean(all_successes[:n_episodes]) * 100),
             "avg_num_steps": float(np.nanmean(all_episode_lengths[:n_episodes])),
-            "pass_at_k": compute_pass_at_k(all_successes[:n_episodes], ks=(1,)),
+            "pass_at_k": compute_pass_at_k(all_successes[:n_episodes], ks=pass_at_ks),
             "eval_s": time.time() - start,
             "eval_ep_s": (time.time() - start) / n_episodes,
         },
@@ -619,8 +650,10 @@ def main(
     config_overrides: list[str] | None = None,
     ah_test: int = 1,
     reference_policy_path: Path | None = None,
-    temperature: float = 1.0, 
+    temperature: float = 1.0,
     noise_level: float = 0.0,
+    observation_noise_std: float = 0.0,
+    pass_at_ks: tuple[int, ...] = (1,),
     max_episodes_rendered: int = 0,
 ):
     assert (pretrained_policy_path is None) ^ (hydra_cfg_path is None)
@@ -674,8 +707,10 @@ def main(
     assert isinstance(policy_2, nn.Module)
     policy_2.eval()
 
-    policy.vqbet.action_head.config.bet_softmax_temperature = temperature
-    policy_2.vqbet.action_head.config.bet_softmax_temperature = temperature
+    if hasattr(policy, "vqbet"):
+        policy.vqbet.action_head.config.bet_softmax_temperature = temperature
+    if hasattr(policy_2, "vqbet"):
+        policy_2.vqbet.action_head.config.bet_softmax_temperature = temperature
 
     # Load the reference policy if provided
     if reference_policy_path:
@@ -700,7 +735,9 @@ def main(
             ah_test=ah_test,  
             reference_policy=reference_policy,  
             temperature=temperature,
-            noise_level=noise_level
+            noise_level=noise_level,
+            observation_noise_std=observation_noise_std,
+            pass_at_ks=pass_at_ks,
         )
     metadata = git_metadata(Path.cwd())
     info["run_metadata"] = {
@@ -722,6 +759,7 @@ def main(
         },
         "temperature": temperature,
         "noise_level": noise_level,
+        "observation_noise_std": observation_noise_std,
         "action_identity": "continuous env action from policy sampler; PolyPPO uses RVQ code IDs separately",
     }
     print(info["aggregated"])
@@ -831,6 +869,19 @@ if __name__ == "__main__":
         help="Specify the noise level to be added to actions.",
     )
     parser.add_argument(
+        "--observation_noise_std",
+        type=float,
+        default=0.0,
+        help="Standard deviation of Gaussian noise added to floating-point observations before policy inference.",
+    )
+    parser.add_argument(
+        "--pass-at-k",
+        type=int,
+        nargs="+",
+        default=[1],
+        help="One or more pass@k values to report from ordered eval attempts.",
+    )
+    parser.add_argument(
         "--max-episodes-rendered",
         type=int,
         default=0,
@@ -847,6 +898,8 @@ if __name__ == "__main__":
             reference_policy_path=args.reference_policy_name_or_path,
             temperature=args.temperature,
             noise_level=args.noise_level,
+            observation_noise_std=args.observation_noise_std,
+            pass_at_ks=tuple(args.pass_at_k),
             max_episodes_rendered=args.max_episodes_rendered,
         )
     else:
@@ -862,5 +915,7 @@ if __name__ == "__main__":
             reference_policy_path=args.reference_policy_name_or_path,
             temperature=args.temperature,
             noise_level=args.noise_level,
+            observation_noise_std=args.observation_noise_std,
+            pass_at_ks=tuple(args.pass_at_k),
             max_episodes_rendered=args.max_episodes_rendered,
         )

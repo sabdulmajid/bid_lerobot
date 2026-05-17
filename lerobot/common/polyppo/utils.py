@@ -52,6 +52,8 @@ def git_metadata(cwd: str | Path | None = None) -> dict[str, Any]:
 def select_device(device: str | None = None, gpu_id: int | None = None) -> torch.device:
     if device:
         requested = torch.device(device)
+        if requested.type == "cuda" and requested.index is None and gpu_id is not None:
+            requested = torch.device(f"cuda:{gpu_id}")
     elif gpu_id is not None:
         requested = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
     else:

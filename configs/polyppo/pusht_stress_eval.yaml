@@ -23,6 +23,9 @@ stress:
     - name: action_noise
       action_noise_std: 0.03
       observation_noise_std: 0.0
+    - name: observation_noise
+      action_noise_std: 0.0
+      observation_noise_std: 0.03
   pass_at_k: [1, 2, 4, 8]
   eval_episodes: 20
   eval_batch_size: 20

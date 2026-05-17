@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from lerobot.common.polyppo.rollout import collect_polyppo_rollouts
 from lerobot.common.polyppo.trainer import train_polyppo_one_update
 
@@ -79,3 +81,36 @@ polyppo:
     assert payload["checkpoint_hashes"]
     assert Path(payload["post_update_eval_path"], "eval_info.json").exists()
     assert payload["changed_parameters"]
+
+
+def test_train_polyppo_mock_requires_base_log_probs_for_positive_kl(tmp_path):
+    rollout_config = _write_rollout_config(tmp_path)
+    rollout_payload = collect_polyppo_rollouts(rollout_config)
+    train_config = tmp_path / "train_kl.yaml"
+    train_config.write_text(
+        f"""
+run:
+  id: test_train_kl
+  output_dir: {tmp_path / "train_kl"}
+  seed: 123
+  device: cpu
+policy:
+  path: null
+train:
+  rollout_path: {rollout_payload["output_path"]}
+  collect_if_missing: false
+  mock_policy: true
+  lr: 0.01
+  clip_ratio: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  kl_coef: 0.1
+  ratio_tolerance: 1.0e-6
+polyppo:
+  diversity_kind: code
+  lambda_div: 0.1
+"""
+    )
+
+    with pytest.raises(ValueError, match="base_log_probs"):
+        train_polyppo_one_update(train_config)
