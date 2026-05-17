@@ -1,0 +1,26 @@
+run:
+  id: polyppo_pusht_grouped_passk_novelty
+  output_dir: outputs/polyppo/pusht_grouped_passk_novelty
+  seed: 160000
+  device: cuda
+  gpu_id: 0
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.7
+
+env:
+  episode_length: 300
+
+checkpoints:
+  - name: ppo_no_diversity
+    checkpoint_path: outputs/polyppo/pusht_novelty_ppo_32x8/checkpoint.pt
+  - name: polyppo_code_diversity
+    checkpoint_path: outputs/polyppo/pusht_novelty_polyppo_code_32x8/checkpoint.pt
+
+grouped_passk:
+  n_start_states: 8
+  attempts_per_start: 16
+  max_steps: 300
+  pass_at_k: [1, 2, 4, 8, 16]
+  validate_profile: benchmark

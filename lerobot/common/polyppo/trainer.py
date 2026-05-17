@@ -96,6 +96,9 @@ def _train_mock_one_update(
     action_preds = tensors["action_preds"].to(device).float()
     valid_mask = tensors.get("valid", torch.ones_like(old_log_probs, dtype=torch.bool)).to(device).bool()
     kl_coef = float(train_cfg.get("kl_coef", 0.0))
+    num_updates = int(train_cfg.get("num_updates", 1))
+    if num_updates <= 0:
+        raise ValueError("train.num_updates must be positive.")
     base_log_probs = None
     if kl_coef > 0.0:
         if "base_log_probs" not in tensors:
@@ -118,30 +121,38 @@ def _train_mock_one_update(
         poly_lambda=float(poly_cfg.get("lambda_div", 0.0)),
         valid_mask=valid_mask,
     )
-    batch = RolloutBatch(
-        returns=returns,
-        old_log_probs=old_log_probs,
-        values=values,
-        current_log_probs=current_log_probs,
-    )
-    loss_out = ppo_loss(
-        batch,
-        advantages,
-        clip_ratio=float(train_cfg.get("clip_ratio", 0.2)),
-        value_coef=float(train_cfg.get("value_coef", 0.5)),
-        entropy=entropy_values,
-        entropy_coef=float(train_cfg.get("entropy_coef", 0.01)),
-        base_log_probs=base_log_probs,
-        kl_coef=kl_coef,
-        valid_mask=valid_mask,
-    )
-    _assert_finite_loss(loss_out)
 
     before = {name: param.detach().clone() for name, param in model.named_parameters()}
-    optimizer.zero_grad()
-    loss_out.total_loss.backward()
-    grad_norms = _grad_norms(model)
-    optimizer.step()
+    loss_history = []
+    grad_norms = {}
+    loss_out = None
+    for update_ix in range(num_updates):
+        current_log_probs, values, entropy_values = model()
+        batch = RolloutBatch(
+            returns=returns,
+            old_log_probs=old_log_probs,
+            values=values,
+            current_log_probs=current_log_probs,
+        )
+        loss_out = ppo_loss(
+            batch,
+            advantages,
+            clip_ratio=float(train_cfg.get("clip_ratio", 0.2)),
+            value_coef=float(train_cfg.get("value_coef", 0.5)),
+            entropy=entropy_values,
+            entropy_coef=float(train_cfg.get("entropy_coef", 0.01)),
+            base_log_probs=base_log_probs,
+            kl_coef=kl_coef,
+            valid_mask=valid_mask,
+        )
+        _assert_finite_loss(loss_out)
+        optimizer.zero_grad()
+        loss_out.total_loss.backward()
+        grad_norms = _grad_norms(model)
+        optimizer.step()
+        loss_history.append(_loss_history_row(update_ix, loss_out, grad_norms))
+    if loss_out is None:
+        raise RuntimeError("No PPO updates were run.")
     changed = _changed_parameters(before, model)
     if not changed:
         raise RuntimeError("one-update smoke failed: no trainable parameters changed.")
@@ -165,6 +176,8 @@ def _train_mock_one_update(
         changed_parameters=changed,
         post_update_eval_path=output_dir / "post_update_eval",
         device=device,
+        num_updates=num_updates,
+        loss_history=loss_history,
     )
 
 
@@ -223,6 +236,9 @@ def _train_vqbet_one_update(
     code_ids_set = tensors["code_ids"].to(device)
     valid_mask = tensors.get("valid", torch.ones_like(old_log_probs, dtype=torch.bool)).to(device).bool()
     kl_coef = float(train_cfg.get("kl_coef", 0.0))
+    num_updates = int(train_cfg.get("num_updates", 1))
+    if num_updates <= 0:
+        raise ValueError("train.num_updates must be positive.")
 
     out = _evaluate_rollout_codes(
         policy,
@@ -262,29 +278,46 @@ def _train_vqbet_one_update(
         poly_lambda=float(poly_cfg.get("lambda_div", 0.0)),
         valid_mask=valid_mask,
     )
-    batch = RolloutBatch(
-        returns=returns,
-        old_log_probs=old_log_probs,
-        values=current_values,
-        current_log_probs=current_log_probs,
-    )
-    loss_out = ppo_loss(
-        batch,
-        advantages,
-        clip_ratio=float(train_cfg.get("clip_ratio", 0.2)),
-        value_coef=float(train_cfg.get("value_coef", 0.5)),
-        entropy=current_entropy,
-        entropy_coef=float(train_cfg.get("entropy_coef", 0.01)),
-        base_log_probs=base_log_probs,
-        kl_coef=kl_coef,
-        valid_mask=valid_mask,
-    )
-    _assert_finite_loss(loss_out)
     before = {name: param.detach().clone() for name, param in policy.named_parameters() if param.requires_grad}
-    optimizer.zero_grad()
-    loss_out.total_loss.backward()
-    grad_norms = _grad_norms(policy)
-    optimizer.step()
+    loss_history = []
+    grad_norms = {}
+    loss_out = None
+    for update_ix in range(num_updates):
+        out = _evaluate_rollout_codes(
+            policy,
+            obs_batch,
+            code_ids,
+            temperature=float(cfg.get("policy", {}).get("temperature", hydra_cfg.policy.bet_softmax_temperature)),
+            batch_size=int(train_cfg.get("recompute_batch_size", 1)),
+        )
+        current_log_probs = out["log_prob"].reshape_as(old_log_probs)
+        current_values = out["value"].reshape_as(returns)
+        current_entropy = out["entropy"].reshape_as(returns)
+        batch = RolloutBatch(
+            returns=returns,
+            old_log_probs=old_log_probs,
+            values=current_values,
+            current_log_probs=current_log_probs,
+        )
+        loss_out = ppo_loss(
+            batch,
+            advantages,
+            clip_ratio=float(train_cfg.get("clip_ratio", 0.2)),
+            value_coef=float(train_cfg.get("value_coef", 0.5)),
+            entropy=current_entropy,
+            entropy_coef=float(train_cfg.get("entropy_coef", 0.01)),
+            base_log_probs=base_log_probs,
+            kl_coef=kl_coef,
+            valid_mask=valid_mask,
+        )
+        _assert_finite_loss(loss_out)
+        optimizer.zero_grad()
+        loss_out.total_loss.backward()
+        grad_norms = _grad_norms(policy)
+        optimizer.step()
+        loss_history.append(_loss_history_row(update_ix, loss_out, grad_norms))
+    if loss_out is None:
+        raise RuntimeError("No PPO updates were run.")
     changed = _changed_parameters(before, policy)
     if not changed:
         raise RuntimeError("VQ-BeT PPO one-update smoke failed: no trainable parameters changed.")
@@ -313,7 +346,23 @@ def _train_vqbet_one_update(
         changed_parameters=changed,
         post_update_eval_path=output_dir / "post_update_eval",
         device=device,
+        num_updates=num_updates,
+        loss_history=loss_history,
     )
+
+
+def _loss_history_row(update_ix: int, loss_out, grad_norms: dict[str, float]) -> dict[str, Any]:
+    return {
+        "update_ix": update_ix,
+        "total": float(loss_out.total_loss.detach().cpu().item()),
+        "policy": float(loss_out.policy_loss.detach().cpu().item()),
+        "value": float(loss_out.value_loss.detach().cpu().item()),
+        "entropy": float(loss_out.entropy_bonus.detach().cpu().item()),
+        "kl_to_base": float(loss_out.kl_to_base.detach().cpu().item()),
+        "approx_kl": float(loss_out.approx_kl.detach().cpu().item()),
+        "clip_fraction": float(loss_out.clip_fraction.detach().cpu().item()),
+        "grad_norm_max": float(max(grad_norms.values())) if grad_norms else 0.0,
+    }
 
 
 def _assert_close_ratio(ratio_error: float, tolerance: float) -> None:
@@ -543,6 +592,8 @@ def _train_result_payload(
     changed_parameters: list[str],
     post_update_eval_path: Path,
     device: torch.device,
+    num_updates: int = 1,
+    loss_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     metadata = git_metadata(Path.cwd())
     return {
@@ -558,6 +609,7 @@ def _train_result_payload(
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_hashes": checkpoint_hashes(checkpoint_path),
         "post_update_eval_path": str(post_update_eval_path),
+        "num_updates": num_updates,
         "ppo_ratio_max_abs_error_before_update": ratio_error,
         "loss": {
             "total": float(loss_out.total_loss.detach().cpu().item()),
@@ -584,5 +636,6 @@ def _train_result_payload(
         },
         "grad_norms": grad_norms,
         "changed_parameters": changed_parameters,
+        "loss_history": loss_history or [],
         "config": cfg,
     }

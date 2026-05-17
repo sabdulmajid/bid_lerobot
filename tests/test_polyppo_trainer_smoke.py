@@ -114,3 +114,41 @@ polyppo:
 
     with pytest.raises(ValueError, match="base_log_probs"):
         train_polyppo_one_update(train_config)
+
+
+def test_train_polyppo_mock_supports_multiple_updates(tmp_path):
+    rollout_config = _write_rollout_config(tmp_path)
+    rollout_payload = collect_polyppo_rollouts(rollout_config)
+    train_config = tmp_path / "train_multi.yaml"
+    train_config.write_text(
+        f"""
+run:
+  id: test_train_multi
+  output_dir: {tmp_path / "train_multi"}
+  seed: 123
+  device: cpu
+policy:
+  path: null
+train:
+  rollout_path: {rollout_payload["output_path"]}
+  collect_if_missing: false
+  mock_policy: true
+  lr: 0.01
+  num_updates: 3
+  clip_ratio: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  kl_coef: 0.0
+  ratio_tolerance: 1.0e-6
+  post_update_eval_episodes: 10
+polyppo:
+  diversity_kind: code
+  lambda_div: 0.1
+"""
+    )
+
+    payload = train_polyppo_one_update(train_config)
+
+    assert all(payload["checks"].values())
+    assert payload["num_updates"] == 3
+    assert len(payload["loss_history"]) == 3
