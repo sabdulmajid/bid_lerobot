@@ -224,7 +224,7 @@ def rollout(
                         noise_direct = (np.random.rand(action.shape[0], action.shape[1]) - 0.5) * noise_level
                         action = action + torch.from_numpy(noise_direct).to(action.device)
 
-        if ah_test == 1:
+        if ah_test == 1 and noise_level > 0.0:
             if noise_count == 0:
                 # Set deterministic seed
                 np.random.seed(env_stochasticity_seed + noise_count)

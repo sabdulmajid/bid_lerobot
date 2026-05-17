@@ -144,11 +144,18 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
             if self.actions_prior is None:
                 raise RuntimeError("actions_prior is not initialized.")
             if self.latent_prior is None:
-                raise RuntimeError("latent_prior is not initialized.")
-            if self.latent_prior.shape[1] == 0:
-                raise ValueError("latent_prior has no remaining steps.")
-            latent_for_return = self.latent_prior
-            self.latent_prior = self.latent_prior[:, 1:, :]
+                if return_latent:
+                    raise RuntimeError("latent_prior is not initialized.")
+                latent_for_return = None
+            else:
+                if self.latent_prior.shape[1] == 0:
+                    self.latent_prior = None
+                    if return_latent:
+                        raise ValueError("latent_prior has no remaining steps.")
+                    latent_for_return = None
+                else:
+                    latent_for_return = self.latent_prior
+                    self.latent_prior = self.latent_prior[:, 1:, :]
 
         action = self._queues["action"].popleft()
         if self.latent_prior is not None and self.latent_prior.shape[1] == 0:
@@ -156,6 +163,8 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
         if protocol_call:
             return action
         if return_latent:
+            if latent_for_return is None:
+                raise RuntimeError("latent_prior is not initialized.")
             return action, self.actions_prior, latent_for_return
         return action, self.actions_prior
 

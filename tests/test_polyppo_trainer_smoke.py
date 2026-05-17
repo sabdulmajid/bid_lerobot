@@ -152,3 +152,44 @@ polyppo:
     assert all(payload["checks"].values())
     assert payload["num_updates"] == 3
     assert len(payload["loss_history"]) == 3
+
+
+def test_train_polyppo_collect_if_missing_rejects_invalid_rollout(monkeypatch, tmp_path):
+    rollout_config = tmp_path / "rollout.yaml"
+    rollout_config.write_text(
+        f"""
+run:
+  output_dir: {tmp_path / "rollout"}
+"""
+    )
+    train_config = tmp_path / "train_rejected.yaml"
+    train_config.write_text(
+        f"""
+run:
+  id: test_train_rejected
+  output_dir: {tmp_path / "train_rejected"}
+  seed: 123
+  device: cpu
+policy:
+  path: null
+train:
+  collect_if_missing: true
+  rollout_config: {rollout_config}
+  mock_policy: true
+polyppo:
+  diversity_kind: code
+  lambda_div: 0.1
+"""
+    )
+
+    def _rejected_rollout(_config):
+        return {
+            "output_path": str(tmp_path / "rollout"),
+            "validation_status": "rejected",
+            "validation_errors": ["bad rollout"],
+        }
+
+    monkeypatch.setattr("lerobot.common.polyppo.trainer.collect_polyppo_rollouts", _rejected_rollout)
+
+    with pytest.raises(RuntimeError, match="failed validation"):
+        train_polyppo_one_update(train_config)

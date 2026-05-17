@@ -61,12 +61,22 @@ def train_polyppo_one_update(config_path: str | Path) -> dict[str, Any]:
         rollout_config = train_cfg.get("rollout_config")
         if not rollout_config:
             raise ValueError("train.collect_if_missing requires train.rollout_config.")
-        collect_polyppo_rollouts(rollout_config)
+        collected_payload = collect_polyppo_rollouts(rollout_config)
+        if collected_payload.get("validation_status") != "passed":
+            raise RuntimeError(
+                "train.collect_if_missing collected a rollout artifact that failed validation: "
+                f"{collected_payload.get('validation_errors', [])}"
+            )
         rollout_path = config_to_dict(load_config(rollout_config)).get("run", {}).get("output_dir")
     if not rollout_path:
         raise ValueError("train.rollout_path is required.")
 
     payload, tensors = load_rollout_artifact(rollout_path)
+    if payload.get("validation_status") not in (None, "passed"):
+        raise RuntimeError(
+            "Refusing to train from a rollout artifact that failed validation: "
+            f"{payload.get('validation_errors', [])}"
+        )
     start = time.time()
     if payload.get("mock_policy", False) or train_cfg.get("mock_policy", False):
         result = _train_mock_one_update(cfg_dict, payload, tensors, output_dir, run_id, device)

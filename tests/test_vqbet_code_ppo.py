@@ -117,12 +117,13 @@ class _FakeActionHead(nn.Module):
 
 
 class _FakeVQBeT(nn.Module):
-    def __init__(self, action_chunk_size: int, action_dim: int, n_layers: int = 2):
+    def __init__(self, action_chunk_size: int, action_dim: int, n_layers: int = 2, latent_steps: int | None = None):
         super().__init__()
         self.action_head = _FakeActionHead()
         self.action_chunk_size = action_chunk_size
         self.action_dim = action_dim
         self.n_layers = n_layers
+        self.latent_steps = latent_steps or action_chunk_size
         self.calls = 0
 
     def forward(self, batch, rollout=False, temperature=1.0, sampled_centers=None):
@@ -134,9 +135,9 @@ class _FakeVQBeT(nn.Module):
             dtype=torch.float32,
         ).reshape(batch_size, self.action_chunk_size, self.action_dim)
         latent = torch.arange(
-            batch_size * self.action_chunk_size * self.n_layers,
+            batch_size * self.latent_steps * self.n_layers,
             dtype=torch.long,
-        ).reshape(batch_size, self.action_chunk_size, self.n_layers)
+        ).reshape(batch_size, self.latent_steps, self.n_layers)
         return actions, latent
 
 
@@ -188,6 +189,23 @@ def test_vqbet_select_action_metadata_mode_preserves_chunk_and_advances_latent_p
     assert first_latent.shape == (1, policy.config.action_chunk_size, 2)
     assert second_latent.shape == (1, 1, 2)
     assert policy.latent_prior is None
+
+
+def test_vqbet_select_action_queued_actions_do_not_require_latent_without_metadata():
+    cfg = _small_config()
+    cfg.action_chunk_size = 3
+    policy = VQBeTPolicy(cfg)
+    policy.normalize_inputs = _IdentityBatch()
+    policy.unnormalize_outputs = _IdentityBatch()
+    policy.vqbet = _FakeVQBeT(cfg.action_chunk_size, cfg.output_shapes["action"][0], latent_steps=1)
+    policy.reset()
+
+    first_action, first_chunk = policy.select_action(_single_observation(), AH_test=2, temperature=0.5)
+    second_action, second_chunk = policy.select_action(_single_observation(), AH_test=2, temperature=0.5)
+
+    assert policy.vqbet.calls == 1
+    assert first_action.shape == second_action.shape == (1, cfg.output_shapes["action"][0])
+    assert torch.equal(first_chunk, second_chunk)
 
 
 class _TinyRgbEncoder(nn.Module):
