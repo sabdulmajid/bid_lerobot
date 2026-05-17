@@ -653,6 +653,9 @@ class VQBeTHead(nn.Module):
                 sampled_secondary_centers = sampled_centers[:, 1].long()
                 sampled_centers = torch.stack((sampled_primary_centers, sampled_secondary_centers), axis=1)
             cbet_logits = torch.stack([cbet_primary_logits, cbet_secondary_logits], dim=1)
+            # The secondary head is conditioned on a sampled/replayed primary code. The exact joint entropy
+            # requires marginalizing over current primary choices, so disable this biased proxy for PPO.
+            code_entropy = torch.zeros(NT, dtype=x.dtype, device=x.device)
         # if self.config.sequentially_select is False, bin prediction head samples primary and secondary code at once.
         else:
             cbet_logits = self.map_to_cbet_preds_bin(x)
@@ -666,6 +669,7 @@ class VQBeTHead(nn.Module):
                 sampled_centers = einops.rearrange(torch.multinomial(cbet_probs.view(-1, choices), num_samples=1), "(NT G) 1 -> NT G", NT=NT)
             else: 
                 sampled_centers = sampled_centers.long()
+            code_entropy = self.code_entropy_from_logits(cbet_logits, temperature)
         
         device = get_device_from_parameters(self)
         indices = (torch.arange(NT, device=device).unsqueeze(1), torch.arange(self.vqvae_model.vqvae_num_layers, device=device).unsqueeze(0), sampled_centers)
@@ -698,7 +702,7 @@ class VQBeTHead(nn.Module):
             "predicted_action": predicted_action,
             "sampled_centers": sampled_centers,
             "sampled_log_prob": self.code_log_prob_from_logits(cbet_logits, sampled_centers, temperature),
-            "code_entropy": self.code_entropy_from_logits(cbet_logits, temperature),
+            "code_entropy": code_entropy,
             "decoded_action": decoded_action,
         }
 

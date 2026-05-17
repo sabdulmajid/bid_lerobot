@@ -88,6 +88,17 @@ def test_vqbet_head_sequential_log_prob_uses_runtime_temperature():
     assert torch.allclose(out["sampled_log_prob"], manual)
 
 
+def test_vqbet_head_sequential_entropy_bonus_is_disabled():
+    cfg = _small_config(sequentially_select=True)
+    head = VQBeTHead(cfg)
+    x = torch.randn(2, 3, cfg.gpt_output_dim)
+    fixed_ids = torch.randint(0, cfg.vqvae_n_embed, (6, head.vqvae_model.vqvae_num_layers))
+
+    out = head(x, temperature=0.5, sampled_centers=fixed_ids)
+
+    assert torch.equal(out["code_entropy"], torch.zeros_like(out["code_entropy"]))
+
+
 class _IdentityBatch(nn.Module):
     def forward(self, batch):
         return batch

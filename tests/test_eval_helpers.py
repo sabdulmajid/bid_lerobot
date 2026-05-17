@@ -1,6 +1,14 @@
+import json
+
+import pytest
 import torch
 
-from lerobot.scripts.eval import _add_observation_noise, _compute_pass_at_k_for_eval, _direct_action_dict
+from lerobot.scripts.eval import (
+    _add_observation_noise,
+    _compute_pass_at_k_for_eval,
+    _direct_action_dict,
+    load_pretrained_policy_hydra_config,
+)
 
 
 class _PlainPolicy:
@@ -42,12 +50,17 @@ def test_compute_pass_at_k_for_eval_requires_grouping_for_multi_attempt_metrics(
     assert "single-attempt" in note
 
 
-def test_compute_pass_at_k_for_eval_uses_attempt_groups_when_provided():
-    pass_at_k, note = _compute_pass_at_k_for_eval(
-        [False, True, False, False, False, True],
-        (1, 2, 3),
-        pass_at_group_size=3,
-    )
+def test_compute_pass_at_k_for_eval_rejects_fake_grouping():
+    with pytest.raises(ValueError, match="same restored start state"):
+        _compute_pass_at_k_for_eval(
+            [False, True, False, False, False, True],
+            (1, 2, 3),
+            pass_at_group_size=3,
+        )
 
-    assert pass_at_k == {"pass@1": 0.0, "pass@2": 0.5, "pass@3": 1.0}
-    assert note is None
+
+def test_config_json_loader_rejects_non_vqbet_policy_type(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"policy_type": "act"}))
+
+    with pytest.raises(ValueError, match="not supported"):
+        load_pretrained_policy_hydra_config(tmp_path)

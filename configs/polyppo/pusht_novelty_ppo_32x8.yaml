@@ -16,7 +16,7 @@ train:
   lr: 1.0e-5
   num_updates: 3
   clip_ratio: 0.2
-  entropy_coef: 0.01
+  entropy_coef: 0.0
   value_coef: 0.5
   kl_coef: 0.0
   ratio_tolerance: 1.0e-4

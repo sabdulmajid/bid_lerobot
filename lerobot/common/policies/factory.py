@@ -112,6 +112,7 @@ def make_policy(
             key
             for key in incompatible.missing_keys
             if "buffer_observation_image" in key
+            or key in {"vqbet.value_head.weight", "vqbet.value_head.bias"}
         }
         allowed_unexpected = {
             key

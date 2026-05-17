@@ -68,13 +68,10 @@ def _compute_pass_at_k_for_eval(
     pass_at_group_size: int | None = None,
 ) -> tuple[dict[str, float], str | None]:
     if pass_at_group_size is not None and pass_at_group_size > 1:
-        if len(successes) % pass_at_group_size != 0:
-            raise ValueError("`pass_at_group_size` must divide the number of evaluated episodes.")
-        grouped = [
-            successes[start : start + pass_at_group_size]
-            for start in range(0, len(successes), pass_at_group_size)
-        ]
-        return compute_pass_at_k(grouped, ks=pass_at_ks), None
+        raise ValueError(
+            "eval_policy seeds each episode independently; grouped pass@k requires repeated attempts from "
+            "the same restored start state. Use lerobot.scripts.eval_grouped_passk instead."
+        )
 
     if any(k > 1 for k in pass_at_ks):
         return (
@@ -591,6 +588,26 @@ def load_pretrained_policy_hydra_config(
         raise FileNotFoundError(f"Expected config.yaml or config.json in {pretrained_policy_path}")
 
     hub_cfg = json.loads(json_path.read_text())
+    policy_type = hub_cfg.get("policy_type") or hub_cfg.get("type") or hub_cfg.get("name")
+    if isinstance(hub_cfg.get("policy"), dict):
+        policy_type = policy_type or hub_cfg["policy"].get("name")
+    if policy_type is not None and policy_type != "vqbet":
+        raise ValueError(
+            f"config.json policy type {policy_type!r} is not supported by this VQ-BeT compatibility loader."
+        )
+    required_vqbet_keys = {
+        "n_obs_steps",
+        "n_action_pred_token",
+        "action_chunk_size",
+        "input_features",
+        "output_features",
+    }
+    missing_vqbet_keys = sorted(required_vqbet_keys.difference(hub_cfg))
+    if missing_vqbet_keys:
+        raise ValueError(
+            "config.json compatibility loading is limited to VQ-BeT checkpoints; "
+            f"missing required VQ-BeT keys: {missing_vqbet_keys}"
+        )
     input_shapes = {
         key: value["shape"] for key, value in hub_cfg["input_features"].items()
     }
@@ -747,6 +764,7 @@ def main(
 
     # Load the reference policy if provided
     if reference_policy_path:
+        reference_policy_path = get_pretrained_policy_path(reference_policy_path)
         reference_policy = make_policy(hydra_cfg=hydra_cfg, pretrained_policy_name_or_path=str(reference_policy_path))
         assert isinstance(reference_policy, nn.Module)
         reference_policy.eval()
@@ -812,8 +830,13 @@ def main(
 
 
 def get_pretrained_policy_path(pretrained_policy_name_or_path, revision=None):
+    local_path = Path(pretrained_policy_name_or_path)
+    if local_path.exists():
+        if not local_path.is_dir():
+            raise ValueError("Local pretrained_policy_name_or_path must be a directory.")
+        return local_path
     try:
-        pretrained_policy_path = Path(snapshot_download(pretrained_policy_name_or_path, revision=revision))
+        pretrained_policy_path = Path(snapshot_download(str(pretrained_policy_name_or_path), revision=revision))
     except (HFValidationError, RepositoryNotFoundError) as e:
         if isinstance(e, HFValidationError):
             error_message = (
