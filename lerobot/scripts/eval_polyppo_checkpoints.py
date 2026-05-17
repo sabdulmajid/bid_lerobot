@@ -43,6 +43,9 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
     policy_cfg = cfg.get("policy", {})
     stress_cfg = cfg.get("stress", {})
     pass_at_ks = tuple(int(k) for k in stress_cfg.get("pass_at_k", [1]))
+    pass_at_group_size = stress_cfg.get("pass_at_group_size")
+    if pass_at_group_size is not None:
+        pass_at_group_size = int(pass_at_group_size)
     output_dir = Path(run_cfg.get("output_dir", "outputs/polyppo/stress_eval"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -99,6 +102,7 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
                     noise_level=float(variant.get("action_noise_std", 0.0)),
                     observation_noise_std=observation_noise_std,
                     pass_at_ks=pass_at_ks,
+                    pass_at_group_size=pass_at_group_size,
                 )
             finally:
                 env.close()
@@ -125,6 +129,7 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
                 "temperature": float(policy_cfg.get("temperature", hydra_cfg.policy.bet_softmax_temperature)),
                 "observation_noise_std": observation_noise_std,
                 "pass_at_k": list(pass_at_ks),
+                "pass_at_group_size": pass_at_group_size,
                 "stress_variant": variant,
                 "action_identity": (
                     "continuous env action from trained VQ-BeT; PPO update action identity is RVQ code ids"
@@ -148,6 +153,8 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
                     "avg_sum_reward": float(info["aggregated"]["avg_sum_reward"]),
                     "avg_num_steps": float(info["aggregated"]["avg_num_steps"]),
                     "pass_at_k": info["aggregated"]["pass_at_k"],
+                    "pass_at_k_requested": info["aggregated"].get("pass_at_k_requested", list(pass_at_ks)),
+                    "pass_at_k_note": info["aggregated"].get("pass_at_k_note"),
                     "success_ci95": mean_confidence_interval(successes),
                     "max_reward_ci95": mean_confidence_interval(max_rewards),
                     "validation_status": "passed",

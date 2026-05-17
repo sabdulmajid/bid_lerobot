@@ -256,6 +256,7 @@ def _collect_pusht_rollouts(
     values = torch.zeros(n_sets, n_attempts, horizon)
     entropy = torch.zeros(n_sets, n_attempts, horizon)
     valid = torch.zeros(n_sets, n_attempts, horizon, dtype=torch.bool)
+    dones = torch.zeros(n_sets, n_attempts, horizon, dtype=torch.bool)
     successes = torch.zeros(n_sets, n_attempts, dtype=torch.bool)
     max_overlaps = torch.zeros(n_sets, n_attempts)
     episode_lengths = torch.zeros(n_sets, n_attempts, dtype=torch.long)
@@ -310,6 +311,7 @@ def _collect_pusht_rollouts(
                     values[set_ix, attempt_ix, step_ix] = float(value.item())
                     entropy[set_ix, attempt_ix, step_ix] = float(out["entropy"].detach().cpu().item())
                     valid[set_ix, attempt_ix, step_ix] = True
+                    dones[set_ix, attempt_ix, step_ix] = done
                     code_ids[set_ix][attempt_ix].append(out["code_ids"].detach().cpu().squeeze(0))
                     action_preds[set_ix][attempt_ix].append(action_chunk.detach().cpu().squeeze(0))
                     max_coverage = max(max_coverage, float(info.get("coverage", 0.0)))
@@ -346,6 +348,7 @@ def _collect_pusht_rollouts(
         "code_ids": code_tensor.long(),
         "action_preds": action_tensor,
         "valid": valid,
+        "dones": dones,
         "advantages": advantages,
         "successes": successes,
         "max_overlaps": max_overlaps,
@@ -375,7 +378,7 @@ def _collect_pusht_rollouts(
             "return": final_returns,
             "advantage": advantages.mean(dim=-1),
             "reward": rewards,
-            "done": ~valid,
+            "done": dones,
             "success": successes,
             "max_overlap": max_overlaps,
             "episode_length": episode_lengths,

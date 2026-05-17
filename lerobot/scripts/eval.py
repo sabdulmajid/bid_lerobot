@@ -62,6 +62,28 @@ def _add_observation_noise(
     return out
 
 
+def _compute_pass_at_k_for_eval(
+    successes: list[bool],
+    pass_at_ks: tuple[int, ...],
+    pass_at_group_size: int | None = None,
+) -> tuple[dict[str, float], str | None]:
+    if pass_at_group_size is not None and pass_at_group_size > 1:
+        if len(successes) % pass_at_group_size != 0:
+            raise ValueError("`pass_at_group_size` must divide the number of evaluated episodes.")
+        grouped = [
+            successes[start : start + pass_at_group_size]
+            for start in range(0, len(successes), pass_at_group_size)
+        ]
+        return compute_pass_at_k(grouped, ks=pass_at_ks), None
+
+    if any(k > 1 for k in pass_at_ks):
+        return (
+            compute_pass_at_k(successes, ks=(1,)),
+            "single-attempt eval; pass@k>1 requires grouped attempts and was not computed",
+        )
+    return compute_pass_at_k(successes, ks=pass_at_ks), None
+
+
 def rollout(
     env: gym.vector.VectorEnv,
     policy: Policy,
@@ -300,6 +322,7 @@ def eval_policy(
     noise_level: float = 0.0,
     observation_noise_std: float = 0.0,
     pass_at_ks: tuple[int, ...] = (1,),
+    pass_at_group_size: int | None = None,
 ) -> dict:
     """
     Args:
@@ -459,6 +482,12 @@ def eval_policy(
     for thread in threads:
         thread.join()
 
+    pass_at_k, pass_at_k_note = _compute_pass_at_k_for_eval(
+        all_successes[:n_episodes],
+        pass_at_ks,
+        pass_at_group_size=pass_at_group_size,
+    )
+
     # Compile eval info.
     info = {
         "per_episode": [
@@ -486,11 +515,14 @@ def eval_policy(
             "avg_max_reward": float(np.nanmean(max_rewards[:n_episodes])),
             "pc_success": float(np.nanmean(all_successes[:n_episodes]) * 100),
             "avg_num_steps": float(np.nanmean(all_episode_lengths[:n_episodes])),
-            "pass_at_k": compute_pass_at_k(all_successes[:n_episodes], ks=pass_at_ks),
+            "pass_at_k": pass_at_k,
+            "pass_at_k_requested": list(pass_at_ks),
             "eval_s": time.time() - start,
             "eval_ep_s": (time.time() - start) / n_episodes,
         },
     }
+    if pass_at_k_note is not None:
+        info["aggregated"]["pass_at_k_note"] = pass_at_k_note
 
     if return_episode_data:
         info["episodes"] = episode_data
@@ -654,6 +686,7 @@ def main(
     noise_level: float = 0.0,
     observation_noise_std: float = 0.0,
     pass_at_ks: tuple[int, ...] = (1,),
+    pass_at_group_size: int | None = None,
     max_episodes_rendered: int = 0,
 ):
     assert (pretrained_policy_path is None) ^ (hydra_cfg_path is None)
@@ -738,6 +771,7 @@ def main(
             noise_level=noise_level,
             observation_noise_std=observation_noise_std,
             pass_at_ks=pass_at_ks,
+            pass_at_group_size=pass_at_group_size,
         )
     metadata = git_metadata(Path.cwd())
     info["run_metadata"] = {
@@ -882,6 +916,12 @@ if __name__ == "__main__":
         help="One or more pass@k values to report from ordered eval attempts.",
     )
     parser.add_argument(
+        "--pass-at-group-size",
+        type=int,
+        default=None,
+        help="Number of repeated attempts per initial state for pass@k grouping.",
+    )
+    parser.add_argument(
         "--max-episodes-rendered",
         type=int,
         default=0,
@@ -900,6 +940,7 @@ if __name__ == "__main__":
             noise_level=args.noise_level,
             observation_noise_std=args.observation_noise_std,
             pass_at_ks=tuple(args.pass_at_k),
+            pass_at_group_size=args.pass_at_group_size,
             max_episodes_rendered=args.max_episodes_rendered,
         )
     else:
@@ -917,5 +958,6 @@ if __name__ == "__main__":
             noise_level=args.noise_level,
             observation_noise_std=args.observation_noise_std,
             pass_at_ks=tuple(args.pass_at_k),
+            pass_at_group_size=args.pass_at_group_size,
             max_episodes_rendered=args.max_episodes_rendered,
         )

@@ -121,8 +121,8 @@ def make_policy(
         unexpected_missing = set(incompatible.missing_keys).difference(allowed_missing)
         unexpected_extra = set(incompatible.unexpected_keys).difference(allowed_unexpected)
         if unexpected_missing or unexpected_extra:
-            logging.warning(
-                "Pretrained policy loaded with non-strict state dict. "
+            raise RuntimeError(
+                "Pretrained policy checkpoint is incompatible after applying migration allowances. "
                 f"missing={sorted(unexpected_missing)} unexpected={sorted(unexpected_extra)}"
             )
 

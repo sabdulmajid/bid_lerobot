@@ -181,7 +181,10 @@ def _train_vqbet_one_update(
 
     train_cfg = cfg.get("train", {})
     poly_cfg = cfg.get("polyppo", {})
-    policy_path = cfg.get("policy", {}).get("path") or rollout_payload["checkpoint"]["main_policy_path"]
+    policy_override = train_cfg.get("policy_path_override")
+    policy_path = policy_override or rollout_payload["checkpoint"].get("main_policy_path") or cfg.get("policy", {}).get("path")
+    if policy_path is None:
+        raise ValueError("Training requires a rollout checkpoint main_policy_path or train.policy_path_override.")
     pretrained_path = get_pretrained_policy_path(policy_path)
     hydra_cfg = load_pretrained_policy_hydra_config(pretrained_path, [])
     hydra_cfg.device = str(device)

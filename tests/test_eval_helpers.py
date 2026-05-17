@@ -1,6 +1,6 @@
 import torch
 
-from lerobot.scripts.eval import _add_observation_noise, _direct_action_dict
+from lerobot.scripts.eval import _add_observation_noise, _compute_pass_at_k_for_eval, _direct_action_dict
 
 
 class _PlainPolicy:
@@ -33,3 +33,21 @@ def test_add_observation_noise_zero_std_returns_original_mapping():
     observation = {"float": torch.zeros(3)}
 
     assert _add_observation_noise(observation, 0.0, torch.Generator()) is observation
+
+
+def test_compute_pass_at_k_for_eval_requires_grouping_for_multi_attempt_metrics():
+    pass_at_k, note = _compute_pass_at_k_for_eval([False, True, True], (1, 2, 4))
+
+    assert pass_at_k == {"pass@1": 2 / 3}
+    assert "single-attempt" in note
+
+
+def test_compute_pass_at_k_for_eval_uses_attempt_groups_when_provided():
+    pass_at_k, note = _compute_pass_at_k_for_eval(
+        [False, True, False, False, False, True],
+        (1, 2, 3),
+        pass_at_group_size=3,
+    )
+
+    assert pass_at_k == {"pass@1": 0.0, "pass@2": 0.5, "pass@3": 1.0}
+    assert note is None

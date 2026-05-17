@@ -101,6 +101,7 @@ stress:
       action_noise_std: 0.01
       observation_noise_std: 0.03
   pass_at_k: [1, 2, 4]
+  pass_at_group_size: 3
   eval_episodes: 3
   eval_batch_size: 3
 """
@@ -164,4 +165,5 @@ stress:
     assert calls[0]["noise_level"] == 0.01
     assert calls[0]["observation_noise_std"] == 0.03
     assert calls[0]["pass_at_ks"] == (1, 2, 4)
+    assert calls[0]["pass_at_group_size"] == 3
     assert summary["rows"][0]["pass_at_k"] == {"pass@1": 1.0, "pass@2": 1.0, "pass@4": 1.0}
