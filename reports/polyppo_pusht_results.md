@@ -106,3 +106,13 @@ Diagnose the observation-noise regression and then implement the small sweep as 
 5. PolyPPO action diversity.
 
 Kill scaling if PolyPPO does not beat PPO no-diversity or pretrained direct on pass@k, coverage/max overlap, robustness, or pass@1 at matched compute.
+
+Exact blocker: the current one-update PolyPPO code-diversity config fails the scale-up kill criterion because it trails PPO no-diversity by 0.20 pass@1 under observation noise, and no full multi-update small-sweep runner has produced 32x8 rollout evidence yet.
+
+Exact resume command after implementing/confirming the small-sweep executor:
+
+```bash
+cd /tmp/bid_lerobot_polyppo_review
+PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH \
+python -m lerobot.scripts.train_polyppo --config configs/polyppo/pusht_small_sweep.yaml
+```
