@@ -17,17 +17,18 @@ Headline claim: not filled. Current runs are smoke and triage scale only.
 | Artifact | Episodes / Sets | Result | Validation |
 |---|---:|---|---|
 | Pretrained VQ-BeT direct, temp 0.1 | 100 episodes | pass@1 0.50, avg max overlap 0.7667, avg steps 232.2 | passed benchmark |
-| Real set-attempt rollout | 4 sets x 3 attempts | pass@1/2/4/8 all 0.0, avg code diversity 1.0521, avg action diversity 1.6109 | passed smoke |
+| Real set-attempt rollout | 4 sets x 3 attempts | grouped pass@1/2/4/8 all 0.0, avg code diversity 1.0521, avg action diversity 1.6109 | passed smoke |
 | PPO no diversity one update | 10 post-update eval episodes | pass@1 0.50, avg max overlap 0.8478 | passed smoke |
 | PolyPPO code diversity one update | 10 post-update eval episodes | pass@1 0.50, avg max overlap 0.8478 | passed smoke |
-| PPO no diversity stress standard | 20 episodes | pass@1/2/4/8 0.55, avg max overlap 0.7886 | passed benchmark |
-| PPO no diversity stress action noise | 20 episodes | pass@1/2/4/8 0.70, avg max overlap 0.8881 | passed benchmark |
-| PPO no diversity stress observation noise | 20 episodes | pass@1/2/4/8 0.55, avg max overlap 0.8306 | passed benchmark |
-| PolyPPO code diversity stress standard | 20 episodes | pass@1/2/4/8 0.60, avg max overlap 0.8279 | passed benchmark |
-| PolyPPO code diversity stress action noise | 20 episodes | pass@1/2/4/8 0.65, avg max overlap 0.8718 | passed benchmark |
-| PolyPPO code diversity stress observation noise | 20 episodes | pass@1/2/4/8 0.35, avg max overlap 0.7305 | passed benchmark |
+| PPO no diversity stress standard | 20 episodes | pass@1 0.55, avg max overlap 0.7886 | passed benchmark |
+| PPO no diversity stress action noise | 20 episodes | pass@1 0.70, avg max overlap 0.8881 | passed benchmark |
+| PPO no diversity stress observation noise | 20 episodes | pass@1 0.55, avg max overlap 0.8306 | passed benchmark |
+| PolyPPO code diversity stress standard | 20 episodes | pass@1 0.60, avg max overlap 0.8279 | passed benchmark |
+| PolyPPO code diversity stress action noise | 20 episodes | pass@1 0.65, avg max overlap 0.8718 | passed benchmark |
+| PolyPPO code diversity stress observation noise | 20 episodes | pass@1 0.35, avg max overlap 0.7305 | passed benchmark |
 
 The stress numbers are not statistically strong. The 95% CIs are wide at 20 episodes. They are useful as a wiring and triage signal only.
+Stress evals above are single-attempt evals over distinct seeds. `pass@2/4/8` was requested by config but is intentionally not computed without grouped repeated attempts per initial state; the eval artifacts carry `pass_at_k_note` documenting this.
 
 ## Correctness Gates
 
@@ -41,6 +42,10 @@ The stress numbers are not statistically strong. The 95% CIs are wide at 20 epis
 - Padded rollout steps are masked in PPO losses, value losses, KL, entropy, advantage normalization, and diversity summaries.
 - `train.kl_coef > 0` now requires base log-probs; real VQ-BeT training recomputes a frozen base-policy KL target.
 - Eval artifact validation type-checks metadata/aggregates and rejects non-finite per-episode metrics.
+- Eval pass@k reporting now requires explicit repeated-attempt grouping for `k > 1`; single-attempt evals report pass@1 only and emit a note instead of duplicating pass@1 across larger k values.
+- Pretrained checkpoint loading now fails on unexpected missing/extra keys after migration allowances instead of warning and continuing.
+- PPO rollout artifacts now store real environment terminal `done` flags separately from padding masks.
+- PPO training defaults to the rollout artifact checkpoint path; config-level policy path fallback is only used through an explicit override.
 - Real rollout artifacts store set ids, attempt ids, prefix hashes, code ids, old log-probs, values, entropy, rewards, done/success, max overlap, returns, action/code diversity, checkpoint hashes, command, git metadata, GPU metadata, and seed manifest.
 
 ## Commands
@@ -86,6 +91,7 @@ python -m lerobot.scripts.summarize_polyppo_results --output-dir outputs/polyppo
 - Real small sweep over at least PPO no-diversity, PPO+KL/BC regularization, PolyPPO return-only, PolyPPO code diversity, and PolyPPO action diversity.
 - Larger rollout config: at least 32 prefix sets x 8 attempts for candidate configs.
 - 100 episode paired eval for promising configs and 200-500 paired episodes for winners.
+- Grouped repeated-attempt pass@k evals for checkpoint comparison; current stress rows are pass@1 single-attempt triage only.
 - Stress variants beyond standard/action/observation noise: held-out/randomized starts and reduced reactivity.
 - BID and PolySelect inference baselines; they remain baselines and should not block PolyPPO training.
 
