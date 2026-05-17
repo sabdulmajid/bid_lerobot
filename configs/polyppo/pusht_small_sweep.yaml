@@ -1,0 +1,28 @@
+run:
+  id: polyppo_pusht_small_sweep
+  output_dir: outputs/polyppo/pusht_small_sweep
+  seed: 110000
+  device: cuda
+  gpu_id: 1
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.7
+
+sweep:
+  methods:
+    - ppo_no_diversity
+    - ppo_kl_to_base
+    - polyppo_return_only
+    - polyppo_code_diversity
+    - polyppo_action_diversity
+  attempts_per_prefix: [4, 8]
+  n_prefixes_per_batch: [16, 32]
+  lambda_div: [0.0, 0.1, 0.3]
+  target_kl: 0.02
+  clip_ratio: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  kl_to_base: [0.0, 0.01, 0.05]
+  triage_eval_episodes: 50
+  promising_eval_episodes: 100

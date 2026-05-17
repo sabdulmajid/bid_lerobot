@@ -1,0 +1,26 @@
+run:
+  id: polyppo_pusht_one_update
+  output_dir: outputs/polyppo/pusht_one_update
+  seed: 100000
+  device: cuda
+  gpu_id: 1
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.7
+
+train:
+  rollout_path: outputs/polyppo/pusht_rollout_smoke
+  collect_if_missing: true
+  rollout_config: configs/polyppo/pusht_rollout_smoke.yaml
+  lr: 1.0e-5
+  clip_ratio: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  kl_coef: 0.0
+  ratio_tolerance: 1.0e-4
+  post_update_eval_episodes: 10
+
+polyppo:
+  diversity_kind: none
+  lambda_div: 0.0

@@ -61,16 +61,17 @@ class PPOLossOutput:
 
 
 def f_poly(returns: Tensor, diversity: Tensor, poly_lambda: float = 0.0) -> Tensor:
-    """Blend reward returns with an auxiliary diversity score.
+    """Add an auxiliary diversity score to reward returns.
 
+    This follows the PolyPPO score used for the PushT experiments:
+    `score_i = return_i + lambda_div * diversity_i`.
     When `poly_lambda=0.0`, this is equivalent to returns-only ranking.
-    When `poly_lambda=1.0`, this is equivalent to diversity-only ranking.
     """
     if returns.shape != diversity.shape:
         raise ValueError("`returns` and `diversity` must have identical shape.")
-    if not 0.0 <= poly_lambda <= 1.0:
-        raise ValueError("`poly_lambda` must be in [0, 1].")
-    return (1.0 - poly_lambda) * returns + poly_lambda * diversity
+    if poly_lambda < 0.0:
+        raise ValueError("`poly_lambda` must be non-negative.")
+    return returns + poly_lambda * diversity
 
 
 def pairwise_l1_diversity(values: Tensor) -> Tensor:

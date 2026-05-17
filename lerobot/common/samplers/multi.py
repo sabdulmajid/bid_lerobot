@@ -421,8 +421,8 @@ def bidirectional_plus_ema_sampler(strong, weak, prior, obs_dict, ah_count, ah_t
 
 
     # predict
-    action_strong, action_strong_chunk = strong.select_action(obs_dict_batch, ah_test, temperature)
-    action_weak, action_weak_chunk = weak.select_action(obs_dict_batch, ah_test, temperature)
+    action_strong, action_strong_chunk, _ = strong.select_action(obs_dict_batch, ah_test, temperature)
+    action_weak, action_weak_chunk, _ = weak.select_action(obs_dict_batch, ah_test, temperature)
     action_strong = action_strong.unsqueeze(1)
     action_weak = action_weak.unsqueeze(1)
 

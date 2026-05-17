@@ -14,14 +14,53 @@ POLY_BID_DIAGNOSTIC_KEYS = {
     "objective_scores",
 }
 PPO_ROLLOUT_KEYS = {
+    "run_id",
+    "git_sha",
+    "git_dirty",
+    "command",
+    "seed_manifest",
+    "checkpoint",
+    "gpu_id",
+    "output_path",
+    "wall_time_s",
     "n_sets",
     "n_attempts",
     "set_id",
     "attempt_id",
+    "prefix_step",
+    "prefix_env_state_hash",
+    "tensor_path",
+    "tensor_shapes",
+    "action_identity",
     "old_log_prob",
     "value",
+    "entropy",
+    "reward",
+    "done",
+    "success",
+    "max_overlap",
     "return",
     "advantage",
+    "action_summary",
+    "observation_summary",
+    "code_ids",
+    "code_diversity",
+    "action_diversity",
+}
+PPO_ROLLOUT_TENSOR_KEYS = {
+    "returns",
+    "rewards",
+    "old_log_probs",
+    "values",
+    "entropy",
+    "code_ids",
+    "action_preds",
+    "valid",
+    "advantages",
+    "successes",
+    "max_overlaps",
+    "code_diversity",
+    "action_diversity",
 }
 
 
@@ -166,6 +205,53 @@ def _validate_ppo_rollout_artifact(path: Path, profile: str) -> ValidationResult
     missing = PPO_ROLLOUT_KEYS.difference(payload)
     if missing:
         result.reject(f"ppo rollout missing keys: {sorted(missing)}")
+        return result
+
+    n_sets = int(payload.get("n_sets", 0))
+    n_attempts = int(payload.get("n_attempts", 0))
+    if n_sets <= 0:
+        result.reject(f"n_sets must be positive, got {n_sets}")
+    if n_attempts <= 1:
+        result.reject(f"n_attempts must be >1 for set-attempt rollout evidence, got {n_attempts}")
+
+    if len(payload.get("set_id", [])) != n_sets:
+        result.reject("set_id length must equal n_sets")
+    if len(payload.get("attempt_id", [])) != n_sets:
+        result.reject("attempt_id outer length must equal n_sets")
+    for ix, attempts in enumerate(payload.get("attempt_id", [])):
+        if len(attempts) != n_attempts:
+            result.reject(f"attempt_id[{ix}] length must equal n_attempts")
+
+    if len(payload.get("prefix_step", [])) != n_sets:
+        result.reject("prefix_step length must equal n_sets")
+    prefix_hashes = payload.get("prefix_env_state_hash", [])
+    if len(prefix_hashes) != n_sets:
+        result.reject("prefix_env_state_hash length must equal n_sets")
+    if any(not hash_value for hash_value in prefix_hashes):
+        result.reject("prefix_env_state_hash entries must be non-empty")
+
+    seed_manifest = payload.get("seed_manifest", [])
+    if len(seed_manifest) != n_sets:
+        result.reject("seed_manifest length must equal n_sets for set-attempt rollouts")
+
+    tensor_path = path / payload["tensor_path"]
+    if not tensor_path.exists():
+        result.reject(f"missing rollout tensor file: {payload['tensor_path']}")
+    tensor_shapes = payload.get("tensor_shapes", {})
+    tensor_missing = PPO_ROLLOUT_TENSOR_KEYS.difference(tensor_shapes)
+    if tensor_missing:
+        result.reject(f"ppo rollout tensor_shapes missing keys: {sorted(tensor_missing)}")
+    for key in PPO_ROLLOUT_TENSOR_KEYS.intersection(tensor_shapes):
+        shape = tensor_shapes[key]
+        if len(shape) < 2 or shape[0] != n_sets or shape[1] != n_attempts:
+            result.reject(f"tensor_shapes.{key} must start with [n_sets, n_attempts], got {shape}")
+
+    checkpoint = payload.get("checkpoint", {})
+    main_path = checkpoint.get("main_policy_path")
+    main_hashes = _hash_values(checkpoint.get("main_policy_hashes"))
+    if main_path and not main_hashes:
+        result.reject("main checkpoint path is set but main_policy_hashes is empty")
+
     if payload.get("artifact_kind") == "polyppo_rollout":
         poly_missing = {"diversity_score", "poly_return", "poly_lambda"}.difference(payload)
         if poly_missing:

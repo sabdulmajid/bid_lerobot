@@ -1,0 +1,27 @@
+run:
+  id: polyppo_mock_one_update
+  output_dir: outputs/polyppo/mock_one_update
+  seed: 100000
+  device: cpu
+  gpu_id: 0
+
+policy:
+  path: null
+  temperature: 0.7
+
+train:
+  rollout_path: outputs/polyppo/mock_rollout_smoke
+  collect_if_missing: true
+  rollout_config: configs/polyppo/pusht_rollout_mock.yaml
+  mock_policy: true
+  lr: 1.0e-2
+  clip_ratio: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  kl_coef: 0.0
+  ratio_tolerance: 1.0e-6
+  post_update_eval_episodes: 10
+
+polyppo:
+  diversity_kind: code
+  lambda_div: 0.1

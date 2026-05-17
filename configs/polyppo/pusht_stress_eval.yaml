@@ -1,0 +1,28 @@
+run:
+  id: polyppo_pusht_stress_eval
+  output_dir: outputs/polyppo/pusht_stress_eval
+  seed: 120000
+  device: cuda
+  gpu_id: 0
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.1
+
+checkpoints:
+  - name: ppo_no_diversity
+    checkpoint_path: outputs/polyppo/pusht_one_update/checkpoint.pt
+  - name: polyppo_code_diversity
+    checkpoint_path: outputs/polyppo/pusht_one_update_code_diversity/checkpoint.pt
+
+stress:
+  variants:
+    - name: standard
+      action_noise_std: 0.0
+      observation_noise_std: 0.0
+    - name: action_noise
+      action_noise_std: 0.03
+      observation_noise_std: 0.0
+  pass_at_k: [1, 2, 4, 8]
+  eval_episodes: 20
+  eval_batch_size: 20

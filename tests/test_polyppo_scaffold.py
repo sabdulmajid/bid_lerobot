@@ -42,8 +42,8 @@ def test_f_poly_blends_returns_and_diversity():
     out = f_poly(returns, diversity, poly_lambda=0.25)
     expected = torch.tensor(
         [
-            [0.75, 1.75],
-            [2.5, 3.0],
+            [1.0, 2.25],
+            [3.25, 4.0],
         ]
     )
     assert torch.allclose(out, expected)

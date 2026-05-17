@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import os
 import threading
 import time
 from contextlib import nullcontext
@@ -14,10 +15,10 @@ import gymnasium as gym
 import numpy as np
 import torch
 from huggingface_hub import snapshot_download
-from huggingface_hub.utils._errors import RepositoryNotFoundError
-from huggingface_hub.utils._validators import HFValidationError
+from huggingface_hub.utils import HFValidationError, RepositoryNotFoundError
 from torch import Tensor, nn
 from tqdm import trange
+from omegaconf import OmegaConf
 
 from lerobot.common.datasets.factory import make_dataset
 from lerobot.common.envs.factory import make_env
@@ -26,6 +27,8 @@ from lerobot.common.logger import log_output_dir
 from lerobot.common.policies.factory import make_policy
 from lerobot.common.policies.policy_protocol import Policy
 from lerobot.common.policies.utils import get_device_from_parameters
+from lerobot.common.polyppo.metrics import compute_pass_at_k
+from lerobot.common.polyppo.utils import checkpoint_hashes, command_line, current_gpu_id, git_metadata
 from lerobot.common.utils.io_utils import write_video
 from lerobot.common.utils.utils import get_safe_torch_device, init_hydra_config, init_logging, set_global_seed
 from lerobot.common.samplers.single import coherence_sampler, random_sampler, ema_sampler
@@ -118,6 +121,11 @@ def rollout(
         observation = {key: observation[key].to(device, non_blocking=True) for key in observation}  
         with torch.inference_mode():
             # action = policy.select_action(observation)
+            if sampler == "direct":
+                selected = policy.select_action(observation, ah_test, temperature)
+                action = selected[0] if isinstance(selected, tuple) else selected
+                action_pred = selected[1] if isinstance(selected, tuple) and len(selected) > 1 else action.unsqueeze(1)
+                action_dict = {"action": action.unsqueeze(1), "action_pred": action_pred}
             if sampler == "coherence":
                 action_dict = coherence_sampler(policy, prior, observation, count, ah_test, temperature=temperature)
             if sampler == "random":
@@ -257,8 +265,8 @@ def eval_policy(
     start_seed: int | None = None,
     enable_progbar: bool = False,
     enable_inner_progbar: bool = False,
-    sampler: str = "coherence", 
-    ah_test: int = 1, 
+    sampler: str = "direct",
+    ah_test: int = 1,
     reference_policy: torch.nn.Module | None = None,
     temperature: float = 1.0,
     noise_level: float = 0.0
@@ -295,6 +303,7 @@ def eval_policy(
     sum_rewards = []
     max_rewards = []
     all_successes = []
+    all_episode_lengths = []
     all_seeds = []
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
@@ -363,6 +372,7 @@ def eval_policy(
         max_rewards.extend(batch_max_rewards.tolist())
         batch_successes = einops.reduce((rollout_data["success"] * mask), "b n -> b", "any")
         all_successes.extend(batch_successes.tolist())
+        all_episode_lengths.extend((done_indices + 1).tolist())
         if seeds:
             all_seeds.extend(seeds)
         else:
@@ -425,15 +435,17 @@ def eval_policy(
                 "episode_ix": i,
                 "sum_reward": sum_reward,
                 "max_reward": max_reward,
-                "success": success,
-                "seed": seed,
-            }
-            for i, (sum_reward, max_reward, success, seed) in enumerate(
+                    "success": success,
+                    "seed": seed,
+                    "num_steps": int(num_steps),
+                }
+            for i, (sum_reward, max_reward, success, seed, num_steps) in enumerate(
                 zip(
                     sum_rewards[:n_episodes],
                     max_rewards[:n_episodes],
                     all_successes[:n_episodes],
                     all_seeds[:n_episodes],
+                    all_episode_lengths[:n_episodes],
                     strict=True,
                 )
             )
@@ -442,6 +454,8 @@ def eval_policy(
             "avg_sum_reward": float(np.nanmean(sum_rewards[:n_episodes])),
             "avg_max_reward": float(np.nanmean(max_rewards[:n_episodes])),
             "pc_success": float(np.nanmean(all_successes[:n_episodes]) * 100),
+            "avg_num_steps": float(np.nanmean(all_episode_lengths[:n_episodes])),
+            "pass_at_k": compute_pass_at_k(all_successes[:n_episodes], ks=(1,)),
             "eval_s": time.time() - start,
             "eval_ep_s": (time.time() - start) / n_episodes,
         },
@@ -501,6 +515,103 @@ def _compile_episode_data(
     return data_dict
 
 
+def load_pretrained_policy_hydra_config(
+    pretrained_policy_path: Path,
+    config_overrides: list[str] | None = None,
+):
+    yaml_path = pretrained_policy_path / "config.yaml"
+    if yaml_path.exists():
+        return init_hydra_config(str(yaml_path), config_overrides)
+
+    json_path = pretrained_policy_path / "config.json"
+    if not json_path.exists():
+        raise FileNotFoundError(f"Expected config.yaml or config.json in {pretrained_policy_path}")
+
+    hub_cfg = json.loads(json_path.read_text())
+    input_shapes = {
+        key: value["shape"] for key, value in hub_cfg["input_features"].items()
+    }
+    output_shapes = {
+        key: value["shape"] for key, value in hub_cfg["output_features"].items()
+    }
+    input_normalization_modes = {}
+    normalization_mapping = hub_cfg.get("normalization_mapping", {})
+    for key, feature in hub_cfg["input_features"].items():
+        mode = normalization_mapping.get(feature["type"])
+        if mode == "MIN_MAX":
+            input_normalization_modes[key] = "min_max"
+        elif mode == "MEAN_STD":
+            input_normalization_modes[key] = "mean_std"
+    output_normalization_modes = {}
+    for key, feature in hub_cfg["output_features"].items():
+        mode = normalization_mapping.get(feature["type"])
+        if mode == "MIN_MAX":
+            output_normalization_modes[key] = "min_max"
+        elif mode == "MEAN_STD":
+            output_normalization_modes[key] = "mean_std"
+
+    cfg = OmegaConf.create(
+        {
+            "device": hub_cfg.get("device", "cuda"),
+            "use_amp": hub_cfg.get("use_amp", False),
+            "seed": 100000,
+            "dataset_repo_id": "lerobot/pusht",
+            "env": {
+                "name": "pusht",
+                "task": "PushT-v0",
+                "image_size": 96,
+                "state_dim": input_shapes["observation.state"][0],
+                "action_dim": output_shapes["action"][0],
+                "fps": 10,
+                "episode_length": 300,
+                "gym": {
+                    "obs_type": "pixels_agent_pos",
+                    "render_mode": "rgb_array",
+                    "visualization_width": 384,
+                    "visualization_height": 384,
+                },
+            },
+            "eval": {"n_episodes": 50, "batch_size": 50, "use_async_envs": False},
+            "policy": {
+                "name": "vqbet",
+                "n_obs_steps": hub_cfg["n_obs_steps"],
+                "n_action_pred_token": hub_cfg["n_action_pred_token"],
+                "action_chunk_size": hub_cfg["action_chunk_size"],
+                "input_shapes": input_shapes,
+                "output_shapes": output_shapes,
+                "input_normalization_modes": input_normalization_modes,
+                "output_normalization_modes": output_normalization_modes,
+                "vision_backbone": hub_cfg["vision_backbone"],
+                "crop_shape": hub_cfg["crop_shape"],
+                "crop_is_random": hub_cfg["crop_is_random"],
+                "pretrained_backbone_weights": hub_cfg["pretrained_backbone_weights"],
+                "use_group_norm": hub_cfg["use_group_norm"],
+                "spatial_softmax_num_keypoints": hub_cfg["spatial_softmax_num_keypoints"],
+                "n_vqvae_training_steps": hub_cfg["n_vqvae_training_steps"],
+                "vqvae_n_embed": hub_cfg["vqvae_n_embed"],
+                "vqvae_embedding_dim": hub_cfg["vqvae_embedding_dim"],
+                "vqvae_enc_hidden_dim": hub_cfg["vqvae_enc_hidden_dim"],
+                "gpt_block_size": hub_cfg["gpt_block_size"],
+                "gpt_input_dim": hub_cfg["gpt_input_dim"],
+                "gpt_output_dim": hub_cfg["gpt_output_dim"],
+                "gpt_n_layer": hub_cfg["gpt_n_layer"],
+                "gpt_n_head": hub_cfg["gpt_n_head"],
+                "gpt_hidden_dim": hub_cfg["gpt_hidden_dim"],
+                "dropout": hub_cfg["dropout"],
+                "mlp_hidden_dim": hub_cfg["mlp_hidden_dim"],
+                "offset_loss_weight": hub_cfg["offset_loss_weight"],
+                "primary_code_loss_weight": hub_cfg["primary_code_loss_weight"],
+                "secondary_code_loss_weight": hub_cfg["secondary_code_loss_weight"],
+                "bet_softmax_temperature": hub_cfg["bet_softmax_temperature"],
+                "sequentially_select": hub_cfg["sequentially_select"],
+            },
+        }
+    )
+    if config_overrides:
+        cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(config_overrides))
+    return cfg
+
+
 def main(
     pretrained_policy_path: Path | None = None,
     hydra_cfg_path: str | None = None,
@@ -509,12 +620,13 @@ def main(
     ah_test: int = 1,
     reference_policy_path: Path | None = None,
     temperature: float = 1.0, 
-    noise_level: float = 0.0
+    noise_level: float = 0.0,
+    max_episodes_rendered: int = 0,
 ):
     assert (pretrained_policy_path is None) ^ (hydra_cfg_path is None)
     if pretrained_policy_path is not None:
-        hydra_cfg = init_hydra_config(str(pretrained_policy_path / "config.yaml"), config_overrides)
-        hydra_cfg_2 = init_hydra_config(str(pretrained_policy_path / "config.yaml"), config_overrides)
+        hydra_cfg = load_pretrained_policy_hydra_config(pretrained_policy_path, config_overrides)
+        hydra_cfg_2 = load_pretrained_policy_hydra_config(pretrained_policy_path, config_overrides)
     else:
         hydra_cfg = init_hydra_config(hydra_cfg_path, config_overrides)
         hydra_cfg_2 = init_hydra_config(hydra_cfg_path, config_overrides)
@@ -579,7 +691,7 @@ def main(
             policy,
             policy_2,
             hydra_cfg.eval.n_episodes,
-            max_episodes_rendered=10,
+            max_episodes_rendered=max_episodes_rendered,
             videos_dir=Path(out_dir) / "videos",
             start_seed=hydra_cfg.seed,
             enable_progbar=True,
@@ -590,11 +702,37 @@ def main(
             temperature=temperature,
             noise_level=noise_level
         )
+    metadata = git_metadata(Path.cwd())
+    info["run_metadata"] = {
+        "sampler": args.sampler,
+        "n_episodes": hydra_cfg.eval.n_episodes,
+        "seed": hydra_cfg.seed,
+        "command": command_line(),
+        "git_sha": metadata["git_sha"],
+        "git_dirty": metadata["git_dirty"],
+        "git_branch": metadata["git_branch"],
+        "device": str(device),
+        "gpu_id": current_gpu_id(device),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "checkpoint": {
+            "main_policy_path": str(pretrained_policy_path) if pretrained_policy_path is not None else None,
+            "main_policy_hashes": checkpoint_hashes(pretrained_policy_path),
+            "reference_policy_path": str(reference_policy_path) if reference_policy_path else None,
+            "reference_policy_hashes": checkpoint_hashes(reference_policy_path),
+        },
+        "temperature": temperature,
+        "noise_level": noise_level,
+        "action_identity": "continuous env action from policy sampler; PolyPPO uses RVQ code IDs separately",
+    }
     print(info["aggregated"])
 
     # Save info
-    with open(Path(out_dir) / "eval_info.json", "w") as f:
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    with open(out_path / "eval_info.json", "w") as f:
         json.dump(info, f, indent=2)
+    with open(out_path / "seed_manifest.json", "w") as f:
+        json.dump([episode["seed"] for episode in info["per_episode"]], f, indent=2)
 
     env.close()
 
@@ -661,8 +799,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--sampler",
-        choices=["coherence", "random", "contrastive", "bidirectional", "ema", "bidirectional latent"],
-        default="bidirectional",
+        choices=["direct", "coherence", "random", "contrastive", "bidirectional", "ema", "bidirectional latent"],
+        default="direct",
         help="Specify which sampler to use: coherence_sampler, random_sampler, ema_sampler, contrastive_sampler, bidirectional_sampler or bidirectional_latent_sampler",
     )
     parser.add_argument(
@@ -692,6 +830,12 @@ if __name__ == "__main__":
         default=0.0,
         help="Specify the noise level to be added to actions.",
     )
+    parser.add_argument(
+        "--max-episodes-rendered",
+        type=int,
+        default=0,
+        help="Maximum number of eval episodes to render as videos.",
+    )
 
     args = parser.parse_args()
     if args.pretrained_policy_name_or_path is None:
@@ -702,7 +846,8 @@ if __name__ == "__main__":
             ah_test=args.ah_test,
             reference_policy_path=args.reference_policy_name_or_path,
             temperature=args.temperature,
-            noise_level=args.noise_level
+            noise_level=args.noise_level,
+            max_episodes_rendered=args.max_episodes_rendered,
         )
     else:
         pretrained_policy_path = get_pretrained_policy_path(
@@ -716,5 +861,6 @@ if __name__ == "__main__":
             ah_test=args.ah_test,
             reference_policy_path=args.reference_policy_name_or_path,
             temperature=args.temperature,
-            noise_level=args.noise_level
+            noise_level=args.noise_level,
+            max_episodes_rendered=args.max_episodes_rendered,
         )
