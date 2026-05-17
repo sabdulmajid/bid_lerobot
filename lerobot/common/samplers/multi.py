@@ -2,7 +2,6 @@ import torch
 from lerobot.common.samplers.metric import euclidean_distance, coverage_distance, manhattan_distance, cosine_distance
 
 import pdb
-import ipdb
 import torch.nn.functional as F
 torch.set_printoptions(precision=2, sci_mode=False)
 

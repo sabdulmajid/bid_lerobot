@@ -37,8 +37,6 @@ from lerobot.common.policies.vqbet.vqbet_utils import GPT, ResidualVQ
 
 from lerobot.common.samplers.single import coherence_sampler
 
-import ipdb
-
 # ruff: noqa: N806
 
 
@@ -79,6 +77,7 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
 
         self.expected_image_keys = [k for k in config.input_shapes if k.startswith("observation.image")]
         self.actions_prior = None
+        self.latent_prior = None
         self.reset()
 
     def reset(self):
@@ -122,7 +121,20 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
             # since the data in the action queue's dimension is (action_chunk_size, batch_size, action_dim), we transpose the action and fill the queue
             self._queues["action"].extend(actions.transpose(0, 1))
             self.actions_prior = actions_prior
+            self.latent_prior = latent
+        else:
+            if self.actions_prior is None:
+                raise RuntimeError("actions_prior is not initialized.")
+            if self.latent_prior is None:
+                raise RuntimeError("latent_prior is not initialized.")
+            if self.latent_prior.shape[1] == 0:
+                raise ValueError("latent_prior has no remaining steps.")
+            latent = self.latent_prior
+            self.latent_prior = self.latent_prior[:, 1:, :]
+
         action = self._queues["action"].popleft()
+        if self.latent_prior is not None and self.latent_prior.shape[1] == 0:
+            self.latent_prior = None
         return action, self.actions_prior, latent
 
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -148,6 +160,23 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
         _, loss_dict = self.vqbet(batch, rollout=False)
         loss_dict['per_sample_loss'] = loss_dict['action_mse_error_per_sample']
         return loss_dict
+
+    def evaluate_code_actions(
+        self,
+        batch: dict[str, Tensor],
+        code_ids: Tensor,
+        temperature: float = 1.0,
+    ) -> dict[str, Tensor]:
+        """Recompute current-token RVQ code log-probs, entropy, and values.
+
+        `code_ids` are the PPO action identity for the first PolyPPO implementation.
+        They must represent the current action-query token and have shape
+        `(batch, num_code_layers)` or `(batch, 1, num_code_layers)`.
+        """
+        batch = self.normalize_inputs(batch)
+        if "observation.images" not in batch:
+            batch["observation.images"] = torch.stack([batch[k] for k in self.expected_image_keys], dim=-4)
+        return self.vqbet.code_policy(batch, code_ids=code_ids, temperature=temperature)
 
 
 class SpatialSoftmax(nn.Module):
@@ -300,6 +329,7 @@ class VQBeTModel(nn.Module):
 
         # GPT part of VQ-BeT
         self.policy = GPT(config)
+        self.value_head = nn.Linear(config.gpt_output_dim, 1)
         # bin prediction head / offset prediction head part of VQ-BeT
         self.action_head = VQBeTHead(config)
 
@@ -310,7 +340,7 @@ class VQBeTModel(nn.Module):
             torch.row_stack([torch.arange(i, i + self.config.action_chunk_size) for i in range(num_tokens)]),
         )
 
-    def forward(self, batch: dict[str, Tensor], rollout: bool, temperature: float, sampled_centers = None) -> Tensor:
+    def _action_features(self, batch: dict[str, Tensor]) -> Tensor:
         # Input validation.
         assert set(batch).issuperset({"observation.state", "observation.images"})
         batch_size, n_obs_steps = batch["observation.state"].shape[:2]
@@ -358,6 +388,65 @@ class VQBeTModel(nn.Module):
         features = torch.cat(
             [features[:, historical_act_pred_index], features[:, -len_additional_action_token:]], dim=1
         )
+        return features
+
+    def code_policy(
+        self,
+        batch: dict[str, Tensor],
+        code_ids: Tensor | None = None,
+        temperature: float = 1.0,
+    ) -> dict[str, Tensor]:
+        """Return current-token code-policy outputs for PPO-style updates.
+
+        In the first PolyPPO implementation the PPO action identity is the RVQ code tuple for the
+        current action token. Continuous offsets remain deterministic outputs of the network
+        conditioned on the observation features and sampled code ids.
+        """
+        features = self._action_features(batch)
+        current_token_index = self.config.n_obs_steps - 1
+        current_features = features[:, current_token_index : current_token_index + 1]
+
+        if code_ids is not None and code_ids.ndim == 3:
+            if code_ids.shape[1] != 1:
+                raise ValueError("code_ids with 3 dims must have shape (batch, 1, num_code_layers).")
+            code_ids = code_ids[:, 0]
+
+        action_head_output = self.action_head(
+            current_features,
+            temperature=temperature,
+            sampled_centers=code_ids,
+        )
+        batch_size = batch["observation.state"].shape[0]
+        action = action_head_output["predicted_action"][:, 0, :].reshape(
+            batch_size,
+            self.config.action_chunk_size,
+            self.config.output_shapes["action"][0],
+        )
+        value = self.value_head(current_features[:, 0]).squeeze(-1)
+        return {
+            "action_pred": action,
+            "code_ids": action_head_output["sampled_centers"].reshape(
+                batch_size, self.action_head.vqvae_model.vqvae_num_layers
+            ),
+            "code_logits": action_head_output["cbet_logits"].reshape(
+                batch_size,
+                self.action_head.vqvae_model.vqvae_num_layers,
+                self.config.vqvae_n_embed,
+            ),
+            "log_prob": action_head_output["sampled_log_prob"].reshape(batch_size),
+            "entropy": action_head_output["code_entropy"].reshape(batch_size),
+            "value": value,
+        }
+
+    def forward(
+        self,
+        batch: dict[str, Tensor],
+        rollout: bool,
+        temperature: float = 1.0,
+        sampled_centers = None,
+    ) -> Tensor:
+        batch_size, n_obs_steps = batch["observation.state"].shape[:2]
+        features = self._action_features(batch)
         # pass through action head
         action_head_output = self.action_head(features, temperature=temperature, sampled_centers = sampled_centers)
         # if rollout, VQ-BeT don't calculate loss
@@ -419,6 +508,35 @@ class VQBeTHead(nn.Module):
         # loss
         self._focal_loss_fn = FocalLoss(gamma=2.0)
 
+    @staticmethod
+    def code_log_prob_from_logits(
+        cbet_logits: Tensor,
+        code_ids: Tensor,
+        temperature: float = 1.0,
+    ) -> Tensor:
+        if not torch.isfinite(torch.as_tensor(temperature)):
+            raise ValueError("temperature must be finite.")
+        if temperature <= 0:
+            raise ValueError("temperature must be positive for code log-prob computation.")
+        if cbet_logits.shape[:-1] != code_ids.shape:
+            raise ValueError(
+                f"code_ids shape must match cbet_logits without the codebook dimension. "
+                f"Got code_ids={tuple(code_ids.shape)} and logits={tuple(cbet_logits.shape)}."
+            )
+        log_probs = F.log_softmax(cbet_logits / temperature, dim=-1)
+        selected = log_probs.gather(-1, code_ids.long().unsqueeze(-1)).squeeze(-1)
+        return selected.sum(dim=-1)
+
+    @staticmethod
+    def code_entropy_from_logits(cbet_logits: Tensor, temperature: float = 1.0) -> Tensor:
+        if not torch.isfinite(torch.as_tensor(temperature)):
+            raise ValueError("temperature must be finite.")
+        if temperature <= 0:
+            raise ValueError("temperature must be positive for code entropy computation.")
+        probs = torch.softmax(cbet_logits / temperature, dim=-1)
+        log_probs = F.log_softmax(cbet_logits / temperature, dim=-1)
+        return -(probs * log_probs).sum(dim=-1).sum(dim=-1)
+
     def discretize(self, n_vqvae_training_steps, actions):
         # Resize the action sequence data to fit the action chunk size using a sliding window approach.
         actions = torch.cat(
@@ -450,6 +568,11 @@ class VQBeTHead(nn.Module):
     def forward(self, x, temperature: float = 1.0, sampled_centers = None, **kwargs):
         # N is the batch size, and T is number of action query tokens, which are process through same GPT
         N, T, _ = x.shape
+        if sampled_centers is not None:
+            if sampled_centers.ndim == 3:
+                sampled_centers = einops.rearrange(sampled_centers, "N T G -> (N T) G")
+            if sampled_centers.ndim != 2:
+                raise ValueError("sampled_centers must have shape (N*T, G) or (N, T, G).")
         # we calculate N and T side parallely. Thus, the dimensions would be
         # (batch size * number of action query tokens, action chunk size, action dimension)
         x = einops.rearrange(x, "N T WA -> (N T) WA")
@@ -473,11 +596,14 @@ class VQBeTHead(nn.Module):
                 cbet_primary_logits / temperature, dim=-1
             )
             NT, choices = cbet_primary_probs.shape
-            sampled_primary_centers = einops.rearrange(
-                torch.multinomial(cbet_primary_probs.view(-1, choices), num_samples=1),
-                "(NT) 1 -> NT",
-                NT=NT,
-            )
+            if sampled_centers is None:
+                sampled_primary_centers = einops.rearrange(
+                    torch.multinomial(cbet_primary_probs.view(-1, choices), num_samples=1),
+                    "(NT) 1 -> NT",
+                    NT=NT,
+                )
+            else:
+                sampled_primary_centers = sampled_centers[:, 0].long()
 
             cbet_secondary_logits = self.map_to_cbet_preds_secondary_bin(
                 torch.cat(
@@ -488,15 +614,16 @@ class VQBeTHead(nn.Module):
             cbet_secondary_probs = torch.softmax(
                 cbet_secondary_logits / self.config.bet_softmax_temperature, dim=-1
             )
-            sampled_secondary_centers = einops.rearrange(
-                torch.multinomial(cbet_secondary_probs.view(-1, choices), num_samples=1),
-                "(NT) 1 -> NT",
-                NT=NT,
-            )
             if sampled_centers is None:
+                sampled_secondary_centers = einops.rearrange(
+                    torch.multinomial(cbet_secondary_probs.view(-1, choices), num_samples=1),
+                    "(NT) 1 -> NT",
+                    NT=NT,
+                )
                 sampled_centers = torch.stack((sampled_primary_centers, sampled_secondary_centers), axis=1)
             else:
-                sampled_centers_fake = torch.stack((sampled_primary_centers, sampled_secondary_centers), axis=1)
+                sampled_secondary_centers = sampled_centers[:, 1].long()
+                sampled_centers = torch.stack((sampled_primary_centers, sampled_secondary_centers), axis=1)
             cbet_logits = torch.stack([cbet_primary_logits, cbet_secondary_logits], dim=1)
         # if self.config.sequentially_select is False, bin prediction head samples primary and secondary code at once.
         else:
@@ -510,7 +637,7 @@ class VQBeTHead(nn.Module):
             if sampled_centers is None:
                 sampled_centers = einops.rearrange(torch.multinomial(cbet_probs.view(-1, choices), num_samples=1), "(NT G) 1 -> NT G", NT=NT)
             else: 
-                sampled_centers_fake = einops.rearrange(torch.multinomial(cbet_probs.view(-1, choices), num_samples=1), "(NT G) 1 -> NT G", NT=NT)
+                sampled_centers = sampled_centers.long()
         
         device = get_device_from_parameters(self)
         indices = (torch.arange(NT, device=device).unsqueeze(1), torch.arange(self.vqvae_model.vqvae_num_layers, device=device).unsqueeze(0), sampled_centers)
@@ -542,6 +669,8 @@ class VQBeTHead(nn.Module):
             "cbet_logits": cbet_logits,
             "predicted_action": predicted_action,
             "sampled_centers": sampled_centers,
+            "sampled_log_prob": self.code_log_prob_from_logits(cbet_logits, sampled_centers, temperature),
+            "code_entropy": self.code_entropy_from_logits(cbet_logits, temperature),
             "decoded_action": decoded_action,
         }
 
@@ -634,6 +763,7 @@ class VQBeTOptimizer(torch.optim.Adam):
             + list(policy.vqbet.rgb_encoder.parameters())
             + list(policy.vqbet.state_projector.parameters())
             + list(policy.vqbet.rgb_feature_projector.parameters())
+            + list(policy.vqbet.value_head.parameters())
             + [policy.vqbet.action_token]
             + list(policy.vqbet.action_head.map_to_cbet_preds_offset.parameters())
         )

@@ -1,6 +1,5 @@
 import torch
 from lerobot.common.samplers.metric import euclidean_distance
-import ipdb
 
 torch.set_printoptions(precision=1, sci_mode=False)
 
@@ -209,4 +208,3 @@ def ema_sampler(policy, prior, observation, ah_count, ah_test, temperature=1.0, 
         action_dict['action'] = prior[:, :1, :]
         action_dict['action_pred'] = prior
         return action_dict
-
