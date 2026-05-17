@@ -37,6 +37,7 @@ The stress numbers are not statistically strong. The 95% CIs are wide at 20 epis
 - PPO ratio before update is exactly 1.0 for PPO and PolyPPO one-update runs.
 - Value-head overfit, PushT state restore/prefix replay, set-normalized advantages, and `lambda_div=0` equivalence are covered by focused tests.
 - `select_action(batch)` keeps the public policy protocol tensor return; VQ-BeT sampler metadata is opt-in.
+- Direct/random/coherence/ema/BID sampler return-contract regressions are covered by focused tests.
 - Padded rollout steps are masked in PPO losses, value losses, KL, entropy, advantage normalization, and diversity summaries.
 - `train.kl_coef > 0` now requires base log-probs; real VQ-BeT training recomputes a frozen base-policy KL target.
 - Eval artifact validation type-checks metadata/aggregates and rejects non-finite per-episode metrics.
