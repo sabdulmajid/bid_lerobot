@@ -40,6 +40,20 @@ from lerobot.common.samplers.single import coherence_sampler
 # ruff: noqa: N806
 
 
+def _stack_observation_images(batch: dict[str, Tensor], image_keys: list[str]) -> Tensor:
+    images = [batch[key] for key in image_keys]
+    if not images:
+        raise ValueError("VQ-BeT requires at least one observation.image input.")
+    ndim = images[0].ndim
+    if any(image.ndim != ndim for image in images):
+        raise ValueError("All observation image tensors must have the same rank.")
+    if ndim == 4:
+        return torch.stack(images, dim=1)
+    if ndim >= 5:
+        return torch.stack(images, dim=2)
+    raise ValueError("Observation images must have shape (B, C, H, W) or (B, S, C, H, W).")
+
+
 class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
     """
     VQ-BeT Policy as per "Behavior Generation with Latent Actions"
@@ -112,7 +126,7 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
             AH_test = 1
 
         batch = self.normalize_inputs(batch)
-        batch["observation.images"] = torch.stack([batch[k] for k in self.expected_image_keys], dim=-4)
+        batch["observation.images"] = _stack_observation_images(batch, self.expected_image_keys)
         # Note: It's important that this happens after stacking the images into a single key.
         self._queues = populate_queues(self._queues, batch)
 
@@ -171,7 +185,7 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         """Run the batch through the model and compute the loss for training or validation."""
         batch = self.normalize_inputs(batch)
-        batch["observation.images"] = torch.stack([batch[k] for k in self.expected_image_keys], dim=-4)
+        batch["observation.images"] = _stack_observation_images(batch, self.expected_image_keys)
         batch = self.normalize_targets(batch)
         if not self.vqbet.action_head.vqvae_model.discretized.item():
             loss, n_different_codes, n_different_combinations, recon_l1_error = (
@@ -206,7 +220,7 @@ class VQBeTPolicy(nn.Module, PyTorchModelHubMixin):
         """
         batch = self.normalize_inputs(batch)
         if "observation.images" not in batch:
-            batch["observation.images"] = torch.stack([batch[k] for k in self.expected_image_keys], dim=-4)
+            batch["observation.images"] = _stack_observation_images(batch, self.expected_image_keys)
         return self.vqbet.code_policy(batch, code_ids=code_ids, temperature=temperature)
 
 

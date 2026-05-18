@@ -3,6 +3,7 @@ import sys
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
 import torch
 
 from lerobot.scripts import eval_grouped_passk as grouped_module
@@ -104,7 +105,6 @@ stress:
       action_noise_std: 0.01
       observation_noise_std: 0.03
   pass_at_k: [1, 2, 4]
-  pass_at_group_size: 3
   same_seed_across_checkpoints: true
   eval_episodes: 3
   eval_batch_size: 3
@@ -171,8 +171,42 @@ stress:
     assert calls[0]["noise_level"] == 0.01
     assert calls[0]["observation_noise_std"] == 0.03
     assert calls[0]["pass_at_ks"] == (1, 2, 4)
-    assert calls[0]["pass_at_group_size"] == 3
+    assert calls[0]["pass_at_group_size"] is None
     assert summary["rows"][0]["pass_at_k"] == {"pass@1": 1.0, "pass@2": 1.0, "pass@4": 1.0}
+
+
+def test_eval_polyppo_checkpoints_rejects_fake_grouped_passk_before_eval(tmp_path, monkeypatch):
+    config = tmp_path / "stress.yaml"
+    config.write_text(
+        """
+run:
+  output_dir: unused
+  seed: 11
+  device: cpu
+policy:
+  path: fake-policy
+checkpoints:
+  - name: method
+    checkpoint_path:
+stress:
+  variants:
+    - name: standard
+      action_noise_std: 0.0
+      observation_noise_std: 0.0
+  pass_at_k: [1, 2]
+  pass_at_group_size: 2
+  eval_episodes: 2
+  eval_batch_size: 2
+"""
+    )
+    monkeypatch.setattr(
+        eval_ckpt_module,
+        "eval_policy",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("eval should not launch")),
+    )
+
+    with pytest.raises(ValueError, match="eval_grouped_passk"):
+        eval_ckpt_module.eval_polyppo_checkpoints(config)
 
 
 def test_eval_grouped_passk_pairs_start_seed_across_methods(tmp_path, monkeypatch):

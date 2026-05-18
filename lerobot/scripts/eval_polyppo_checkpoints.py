@@ -46,6 +46,11 @@ def eval_polyppo_checkpoints(config_path: str | Path) -> dict[str, Any]:
     pass_at_group_size = stress_cfg.get("pass_at_group_size")
     if pass_at_group_size is not None:
         pass_at_group_size = int(pass_at_group_size)
+        if pass_at_group_size > 1:
+            raise ValueError(
+                "stress.pass_at_group_size > 1 is not supported by eval_polyppo_checkpoints; "
+                "use eval_grouped_passk.py for repeated restored-start pass@k."
+            )
     output_dir = Path(run_cfg.get("output_dir", "outputs/polyppo/stress_eval"))
     output_dir.mkdir(parents=True, exist_ok=True)
 

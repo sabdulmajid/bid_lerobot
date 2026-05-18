@@ -12,8 +12,8 @@ This run tested the smallest valid version: PPO over RVQ code-id tuples only. Co
 
 ## Readiness And Gates
 
-- Latest PR review-gate fixes were pushed and resolved before experiments.
-- Focused suite after the quality-gated implementation: `53 passed, 2 warnings`.
+- Latest PR review-gate fixes were pushed and resolved, including the final image-stacking and fake grouped-pass@k stress-eval fixes.
+- Focused suite after the quality-gated implementation and final review fixes: `62 passed, 2 warnings`.
 - GPU rule followed: at least three clean polls before each CUDA job; after a user request to free a GPU, all remaining work was run on GPU 0 only.
 - Quality-gated train artifact has `git_dirty=false`.
 - Grouped pass@k and paired eval artifacts validated with `validation_status=passed`.
@@ -94,6 +94,7 @@ Do not scale this quality-gated code-diversity variant to 500+ episodes. The nex
 
 ```bash
 PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH pytest -q tests/test_pusht_state_restore.py tests/test_vqbet_code_ppo.py tests/test_polyppo_scaffold.py tests/test_artifact_validator.py tests/test_run_registry.py tests/test_polyppo_metrics.py tests/test_polyppo_rollout_schema.py tests/test_polyppo_trainer_smoke.py tests/test_polyppo_scripts.py
+PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH pytest -q tests/test_pusht_state_restore.py tests/test_vqbet_code_ppo.py tests/test_polyppo_scaffold.py tests/test_artifact_validator.py tests/test_run_registry.py tests/test_polyppo_metrics.py tests/test_polyppo_rollout_schema.py tests/test_polyppo_trainer_smoke.py tests/test_polyppo_scripts.py tests/test_eval_helpers.py
 PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH python -u -m lerobot.scripts.train_polyppo --config configs/polyppo/pusht_novelty_polyppo_qg_code_32x8.yaml
 PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH python -u -m lerobot.scripts.eval_grouped_passk --config configs/polyppo/pusht_grouped_passk_novelty_full.yaml
 PYTHONPATH=/tmp/gymnasium_vendor:/tmp/termcolor_pkg:$PYTHONPATH python -u -m lerobot.scripts.eval_polyppo_checkpoints --config configs/polyppo/pusht_novelty_paired_eval_100.yaml

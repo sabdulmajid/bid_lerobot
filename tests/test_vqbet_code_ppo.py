@@ -141,6 +141,23 @@ class _FakeVQBeT(nn.Module):
         return actions, latent
 
 
+class _FakeCodePolicyVQBeT(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.action_head = _FakeActionHead()
+        self.observation_images_shape = None
+
+    def code_policy(self, batch, code_ids=None, temperature=1.0):
+        del code_ids, temperature
+        self.observation_images_shape = tuple(batch["observation.images"].shape)
+        batch_size = batch["observation.state"].shape[0]
+        return {
+            "log_prob": torch.zeros(batch_size),
+            "value": torch.zeros(batch_size),
+            "entropy": torch.zeros(batch_size),
+        }
+
+
 def _fake_policy() -> VQBeTPolicy:
     cfg = _small_config()
     policy = VQBeTPolicy(cfg)
@@ -206,6 +223,29 @@ def test_vqbet_select_action_queued_actions_do_not_require_latent_without_metada
     assert policy.vqbet.calls == 1
     assert first_action.shape == second_action.shape == (1, cfg.output_shapes["action"][0])
     assert torch.equal(first_chunk, second_chunk)
+
+
+def test_vqbet_evaluate_code_actions_stacks_temporal_images_on_camera_axis():
+    cfg = _small_config()
+    policy = VQBeTPolicy(cfg)
+    policy.normalize_inputs = _IdentityBatch()
+    fake_vqbet = _FakeCodePolicyVQBeT()
+    policy.vqbet = fake_vqbet
+    batch_size = 2
+    batch = {
+        "observation.state": torch.zeros(batch_size, cfg.n_obs_steps, cfg.input_shapes["observation.state"][0]),
+        "observation.image": torch.zeros(batch_size, cfg.n_obs_steps, *cfg.input_shapes["observation.image"]),
+    }
+
+    out = policy.evaluate_code_actions(batch, code_ids=torch.zeros(batch_size, 2, dtype=torch.long), temperature=0.5)
+
+    assert fake_vqbet.observation_images_shape == (
+        batch_size,
+        cfg.n_obs_steps,
+        1,
+        *cfg.input_shapes["observation.image"],
+    )
+    assert out["log_prob"].shape == (batch_size,)
 
 
 class _TinyRgbEncoder(nn.Module):
