@@ -1,0 +1,22 @@
+run:
+  id: polydistill_v2_pusht_collect_val_32x16_top4
+  output_dir: /pub7/neel2/polyppo_runs/pusht_polydistill_v2_val_dataset_32x16_top4
+  seed: 240000
+  device: cuda
+  gpu_id: 0
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.7
+
+env:
+  episode_length: 300
+
+distill:
+  mock: false
+  n_start_states: 32
+  attempts_per_start: 16
+  keep_top_attempts: 4
+  max_steps: 300
+  storage_dtype: float16
+
