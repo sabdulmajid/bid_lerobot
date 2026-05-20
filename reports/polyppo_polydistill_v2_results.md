@@ -11,7 +11,7 @@ Blocked before GPU experiment launch by another active two-GPU job.
 Repository and PR hygiene are complete:
 
 - Local branch: `codex/polyppo-foundation`
-- Remote PR head after push: `4df7db312e0f582ce5fe1fd20a6395a01193a6cb`
+- Remote PR branch: pushed and synced; verify exact current head with `git rev-parse HEAD origin/codex/polyppo-foundation`.
 - Commit author/committer identity: `sabdulmajid <ayman.hasib@outlook.com>`
 - Working tree was clean immediately after the pushed v2 implementation commit.
 
