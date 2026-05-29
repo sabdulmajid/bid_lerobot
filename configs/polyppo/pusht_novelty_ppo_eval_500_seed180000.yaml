@@ -1,0 +1,23 @@
+run:
+  id: polyppo_pusht_novelty_ppo_eval_500_seed180000
+  output_dir: outputs/polyppo/pusht_novelty_ppo_eval_500_seed180000
+  seed: 180000
+  device: cuda
+  gpu_id: 0
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.7
+
+checkpoints:
+  - name: ppo_no_diversity_32x8
+    checkpoint_path: outputs/polyppo/pusht_novelty_ppo_32x8/checkpoint.pt
+
+stress:
+  variants:
+    - name: standard
+      action_noise_std: 0.0
+      observation_noise_std: 0.0
+  pass_at_k: [1]
+  eval_episodes: 500
+  eval_batch_size: 50

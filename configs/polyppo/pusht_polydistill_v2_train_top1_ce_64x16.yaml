@@ -1,0 +1,24 @@
+run:
+  id: polydistill_v2_top1_ce_64x16
+  output_dir: /pub7/neel2/polyppo_runs/pusht_polydistill_v2_top1_ce_64x16
+  seed: 230000
+  device: cuda
+  gpu_id: 1
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.7
+
+train:
+  dataset_path: /pub7/neel2/polyppo_runs/pusht_polydistill_v2_train_dataset_64x16_top4
+  lr: 3.0e-5
+  epochs: 3
+  batch_size: 96
+  mock_policy: false
+
+objective:
+  name: top1_ce
+  top_m: 1
+  tau: 0.07
+  kl_coef: 0.01
+

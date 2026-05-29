@@ -1,0 +1,25 @@
+run:
+  id: polyppo_pusht_rollout_smoke
+  output_dir: outputs/polyppo/pusht_rollout_smoke
+  seed: 100000
+  device: cuda
+  gpu_id: 1
+  validate_profile: smoke
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.7
+
+env:
+  episode_length: 300
+
+rollout:
+  mock: false
+  n_prefixes: 4
+  attempts_per_prefix: 3
+  prefix_steps: 5
+  continuation_horizon: 8
+
+polyppo:
+  diversity_kind: code
+  lambda_div: 0.1

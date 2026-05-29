@@ -1,0 +1,17 @@
+run:
+  id: polydistill_pusht_train_8x16
+  output_dir: outputs/polyppo/pusht_polydistill_topset_8x16
+  seed: 190000
+  device: cuda
+  gpu_id: 0
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.7
+
+train:
+  dataset_path: outputs/polyppo/pusht_polydistill_dataset_8x16
+  lr: 3.0e-5
+  epochs: 5
+  batch_size: 64
+  mock_policy: false

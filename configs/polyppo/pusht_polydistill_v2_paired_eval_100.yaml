@@ -1,0 +1,37 @@
+run:
+  id: polydistill_v2_paired_eval_100
+  output_dir: /pub7/neel2/polyppo_runs/pusht_polydistill_v2_paired_eval_100
+  seed: 250000
+  device: cuda
+  gpu_id: 0
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.7
+
+checkpoints:
+  - name: direct_vqbet
+    checkpoint_path:
+  - name: ppo_no_diversity
+    checkpoint_path: outputs/polyppo/pusht_novelty_ppo_32x8/checkpoint.pt
+  - name: polydistill_v1_topset_8x16
+    checkpoint_path: outputs/polyppo/pusht_polydistill_topset_8x16/checkpoint.pt
+  - name: v2_top1_ce_64x16
+    checkpoint_path: /pub7/neel2/polyppo_runs/pusht_polydistill_v2_top1_ce_64x16/checkpoint.pt
+  - name: v2_topm4_tau007_kl001_64x16
+    checkpoint_path: /pub7/neel2/polyppo_runs/pusht_polydistill_v2_topm4_tau007_kl001_64x16/checkpoint.pt
+  - name: v2_success_soft_m4_tau007_kl001_64x16
+    checkpoint_path: /pub7/neel2/polyppo_runs/pusht_polydistill_v2_success_soft_m4_tau007_kl001_64x16/checkpoint.pt
+  - name: v2_adv_m4_tau05_kl001_64x16
+    checkpoint_path: /pub7/neel2/polyppo_runs/pusht_polydistill_v2_adv_m4_tau05_kl001_64x16/checkpoint.pt
+
+stress:
+  variants:
+    - name: standard
+      action_noise_std: 0.0
+      observation_noise_std: 0.0
+  same_seed_across_checkpoints: true
+  pass_at_k: [1]
+  eval_episodes: 100
+  eval_batch_size: 50
+

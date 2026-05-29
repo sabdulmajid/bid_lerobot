@@ -1,0 +1,32 @@
+run:
+  id: polydistill_pusht_paired_eval_100
+  output_dir: outputs/polyppo/pusht_polydistill_paired_eval_100
+  seed: 180000
+  device: cuda
+  gpu_id: 0
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.7
+
+checkpoints:
+  - name: direct_vqbet
+    checkpoint_path:
+  - name: ppo_no_diversity_32x8
+    checkpoint_path: outputs/polyppo/pusht_novelty_ppo_32x8/checkpoint.pt
+  - name: polyppo_code_diversity_32x8
+    checkpoint_path: outputs/polyppo/pusht_novelty_polyppo_code_32x8/checkpoint.pt
+  - name: polyppo_quality_gated_code_32x8
+    checkpoint_path: outputs/polyppo/pusht_novelty_polyppo_qg_code_32x8/checkpoint.pt
+  - name: polydistill_topset_8x16
+    checkpoint_path: outputs/polyppo/pusht_polydistill_topset_8x16/checkpoint.pt
+
+stress:
+  variants:
+    - name: standard
+      action_noise_std: 0.0
+      observation_noise_std: 0.0
+  same_seed_across_checkpoints: true
+  pass_at_k: [1]
+  eval_episodes: 100
+  eval_batch_size: 50

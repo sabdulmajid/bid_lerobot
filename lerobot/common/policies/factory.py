@@ -104,7 +104,28 @@ def make_policy(
         # huggingface_hub should make it possible to avoid the hack:
         # https://github.com/huggingface/huggingface_hub/pull/2274.
         policy = policy_cls(policy_cfg)
-        policy.load_state_dict(policy_cls.from_pretrained(pretrained_policy_name_or_path).state_dict())
+        incompatible = policy.load_state_dict(
+            policy_cls.from_pretrained(pretrained_policy_name_or_path).state_dict(),
+            strict=False,
+        )
+        allowed_missing = {
+            key
+            for key in incompatible.missing_keys
+            if "buffer_observation_image" in key
+            or key in {"vqbet.value_head.weight", "vqbet.value_head.bias"}
+        }
+        allowed_unexpected = {
+            key
+            for key in incompatible.unexpected_keys
+            if "buffer_observation_image" in key
+        }
+        unexpected_missing = set(incompatible.missing_keys).difference(allowed_missing)
+        unexpected_extra = set(incompatible.unexpected_keys).difference(allowed_unexpected)
+        if unexpected_missing or unexpected_extra:
+            raise RuntimeError(
+                "Pretrained policy checkpoint is incompatible after applying migration allowances. "
+                f"missing={sorted(unexpected_missing)} unexpected={sorted(unexpected_extra)}"
+            )
 
     policy.to(get_safe_torch_device(hydra_cfg.device))
 

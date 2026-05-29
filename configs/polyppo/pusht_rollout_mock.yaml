@@ -1,0 +1,27 @@
+run:
+  id: polyppo_mock_rollout_smoke
+  output_dir: outputs/polyppo/mock_rollout_smoke
+  seed: 100000
+  device: cpu
+  gpu_id: 0
+  validate_profile: smoke
+
+policy:
+  path: null
+  temperature: 0.7
+
+rollout:
+  mock: true
+  n_prefixes: 4
+  attempts_per_prefix: 3
+  prefix_steps: 2
+  continuation_horizon: 4
+  n_obs_steps: 2
+  action_dim: 2
+  action_chunk_size: 2
+  n_code_layers: 2
+  n_codes: 8
+
+polyppo:
+  diversity_kind: code
+  lambda_div: 0.1

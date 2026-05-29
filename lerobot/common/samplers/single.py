@@ -1,8 +1,16 @@
 import torch
 from lerobot.common.samplers.metric import euclidean_distance
-import ipdb
 
 torch.set_printoptions(precision=1, sci_mode=False)
+
+def _select_action_with_chunk(policy, observation_batch, ah_test, temperature):
+    output = policy.select_action(observation_batch, ah_test, temperature)
+    if isinstance(output, tuple):
+        if len(output) < 2:
+            raise ValueError("select_action tuple output must contain at least action and action chunk.")
+        return output[0], output[1]
+    raise ValueError("VQ-BeT sampler expects select_action to return action and action chunk.")
+
 
 def coherence_sampler(policy, prior, observation, ah_count, ah_test, temperature=1.0, num_sample=20, beta=0.90):
     ''' 
@@ -29,7 +37,7 @@ def coherence_sampler(policy, prior, observation, ah_count, ah_test, temperature
 
     if prior is None:
         # generate the first action and action chunk of your trajectory. No coherence sampling needed here
-        action, action_chunk = policy.select_action(observation_batch, ah_test, temperature)
+        action, action_chunk = _select_action_with_chunk(policy, observation_batch, ah_test, temperature)
         action = action.unsqueeze(1)
             
         action_dict_batch = dict()
@@ -49,7 +57,8 @@ def coherence_sampler(policy, prior, observation, ah_count, ah_test, temperature
 
     if ah_count != 0:
         # we are inside an action chunk. No need to compute new action - take action that we already have to take. 
-        action, action_chunk = policy.select_action(observation_batch, ah_test, temperature) # pass through select_action just so that we store the observations and update the action queue 
+        # Pass through select_action so observations and the action queue are updated.
+        action, action_chunk = _select_action_with_chunk(policy, observation_batch, ah_test, temperature)
         # select action that we had already planned on selecting. This will be the first element in the prior
         action_dict = dict()
         action_dict['action'] = prior[:, :1, :]
@@ -57,7 +66,7 @@ def coherence_sampler(policy, prior, observation, ah_count, ah_test, temperature
         return action_dict
 
     # Predict actions and action chunks
-    action, action_chunk = policy.select_action(observation_batch, ah_test, temperature)
+    action, action_chunk = _select_action_with_chunk(policy, observation_batch, ah_test, temperature)
     action = action.unsqueeze(1)
 
     action_dict_batch = dict()
@@ -112,7 +121,7 @@ def random_sampler(policy, prior, observation, ah_count, ah_test, temperature=1.
 
     if ah_count == 0: # if you want to do random sampling
         # generate the action and action chunk of your trajectory
-        action, action_chunk = policy.select_action(observation_batch, ah_test, temperature)
+        action, action_chunk = _select_action_with_chunk(policy, observation_batch, ah_test, temperature)
         action = action.unsqueeze(1)
             
         action_dict_batch = dict()
@@ -132,7 +141,8 @@ def random_sampler(policy, prior, observation, ah_count, ah_test, temperature=1.
 
     if ah_count != 0:
         # so AH_count != 0 and we are inside an action chunk. No need to compute new action - take action that we already have to take. 
-        action, action_chunk = policy.select_action(observation_batch, ah_test, temperature) # pass things through select_action just so that we store the observations and update the action queue 
+        # Pass through select_action so observations and the action queue are updated.
+        action, action_chunk = _select_action_with_chunk(policy, observation_batch, ah_test, temperature)
         # select action that we had already planned on selecting. This will be the first element in the prior
         action_dict = dict()
         action_dict['action'] = prior[:, :1, :]
@@ -162,7 +172,7 @@ def ema_sampler(policy, prior, observation, ah_count, ah_test, temperature=1.0, 
 
     if ah_count == 0: 
         # generate the action and action chunk of your trajectory
-        action, action_chunk = policy.select_action(observation_batch, ah_test, temperature)
+        action, action_chunk = _select_action_with_chunk(policy, observation_batch, ah_test, temperature)
         action = action.unsqueeze(1)
             
         action_dict_batch = dict()
@@ -203,10 +213,10 @@ def ema_sampler(policy, prior, observation, ah_count, ah_test, temperature=1.0, 
 
     if ah_count != 0:
         # so AH_count != 0 and we are inside an action chunk. No need to compute new action - take action that we already have to take. 
-        action, action_chunk = policy.select_action(observation_batch, ah_test, temperature) # pass things through select_action just so that we store the observations and update the action queue 
+        # Pass through select_action so observations and the action queue are updated.
+        action, action_chunk = _select_action_with_chunk(policy, observation_batch, ah_test, temperature)
         # select action that we had already planned on selecting. This will be the first element in the prior
         action_dict = dict()
         action_dict['action'] = prior[:, :1, :]
         action_dict['action_pred'] = prior
         return action_dict
-

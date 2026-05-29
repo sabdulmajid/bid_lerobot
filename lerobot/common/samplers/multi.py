@@ -2,11 +2,32 @@ import torch
 from lerobot.common.samplers.metric import euclidean_distance, coverage_distance, manhattan_distance, cosine_distance
 
 import pdb
-import ipdb
 import torch.nn.functional as F
 torch.set_printoptions(precision=2, sci_mode=False)
 
 # prior, observation, count, ah_test
+
+
+def _select_action_with_chunk(policy, observation_batch, ah_test, temperature, sampled_centers=None):
+    output = policy.select_action(observation_batch, ah_test, temperature, sampled_centers)
+    if isinstance(output, tuple):
+        if len(output) < 2:
+            raise ValueError("select_action tuple output must contain at least action and action chunk.")
+        return output[0], output[1]
+    raise ValueError("VQ-BeT sampler expects select_action to return action and action chunk.")
+
+
+def _select_action_with_latent(policy, observation_batch, ah_test, temperature, sampled_centers=None):
+    output = policy.select_action(
+        observation_batch,
+        ah_test,
+        temperature,
+        sampled_centers,
+        return_latent=True,
+    )
+    if not isinstance(output, tuple) or len(output) != 3:
+        raise ValueError("Latent BID sampler expects action, action chunk, and latent output.")
+    return output
 
 def contrastive_sampler(strong, weak, prior, obs_dict, ah_count, ah_test, temperature=1.0, num_sample=30, name='contrast', factor=2):
     """
@@ -31,8 +52,8 @@ def contrastive_sampler(strong, weak, prior, obs_dict, ah_count, ah_test, temper
     }
 
     # predict
-    action_strong, action_strong_chunk, _ = strong.select_action(obs_dict_batch, ah_test, temperature)
-    action_weak, action_weak_chunk, _ = weak.select_action(obs_dict_batch, ah_test, temperature)
+    action_strong, action_strong_chunk = _select_action_with_chunk(strong, obs_dict_batch, ah_test, temperature)
+    action_weak, action_weak_chunk = _select_action_with_chunk(weak, obs_dict_batch, ah_test, temperature)
     action_strong = action_strong.unsqueeze(1)
     action_weak = action_weak.unsqueeze(1)
 
@@ -126,8 +147,8 @@ def bidirectional_sampler(strong, weak, prior, obs_dict, ah_count, ah_test, temp
 
 
     # predict
-    action_strong, action_strong_chunk, _ = strong.select_action(obs_dict_batch, ah_test, temperature)
-    action_weak, action_weak_chunk, _ = weak.select_action(obs_dict_batch, ah_test, temperature)
+    action_strong, action_strong_chunk = _select_action_with_chunk(strong, obs_dict_batch, ah_test, temperature)
+    action_weak, action_weak_chunk = _select_action_with_chunk(weak, obs_dict_batch, ah_test, temperature)
     action_strong = action_strong.unsqueeze(1)
     action_weak = action_weak.unsqueeze(1)
 
@@ -270,8 +291,12 @@ def bidirectional_sampler_latent(strong_agent, strong, weak, prior, prior_action
     # predict
     # predict num_sample action chunks using strong and weak policies
     # we predict action chunks even if we are inside the action chunk to update the history of observations for the strong and weak policies
-    action_strong, action_strong_chunk, latent_strong = strong.select_action(obs_dict_batch, ah_test, temperature)
-    action_weak, action_weak_chunk, latent_weak = weak.select_action(obs_dict_batch, ah_test, temperature)    
+    action_strong, action_strong_chunk, latent_strong = _select_action_with_latent(
+        strong, obs_dict_batch, ah_test, temperature
+    )
+    action_weak, action_weak_chunk, latent_weak = _select_action_with_latent(
+        weak, obs_dict_batch, ah_test, temperature
+    )
     action_strong = action_strong.unsqueeze(1)
     action_weak = action_weak.unsqueeze(1)
 
@@ -289,11 +314,15 @@ def bidirectional_sampler_latent(strong_agent, strong, weak, prior, prior_action
     if ah_count != 0:
         # we are inside an action chunk. No need to compute new action - take action that we already have to take. 
         # take action using prior
-        action_strong, action_strong_chunk, latent_strong = strong_agent.select_action(obs_dict_batch_original, ah_test, temperature)
+        obs_dict_batch_original = {
+            'observation.state': obs_dict['observation.state'].unsqueeze(1).repeat(1, 1, 1).view(B * 1, OD),
+            'observation.image': obs_dict['observation.image'].unsqueeze(1).repeat(1, 1, 1, 1, 1).view(B * 1, 3, 96, 96)
+        }
+        _select_action_with_latent(strong_agent, obs_dict_batch_original, ah_test, temperature)
         
         action_dict = dict()
-        action_dict['action'] = prior[:, :1, :]
-        action_dict['action_pred'] = prior
+        action_dict['action'] = prior_action[:, :1, :]
+        action_dict['action_pred'] = prior_action
         action_dict['latent'] = prior
         return action_dict
     
@@ -388,7 +417,9 @@ def bidirectional_sampler_latent(strong_agent, strong, weak, prior, prior_action
         'observation.state': obs_dict['observation.state'].unsqueeze(1).repeat(1, 1, 1).view(B * 1, OD),
         'observation.image': obs_dict['observation.image'].unsqueeze(1).repeat(1, 1, 1, 1, 1).view(B * 1, 3, 96, 96)
     }
-    action_strong, action_strong_chunk, latent_strong = strong_agent.select_action(obs_dict_batch_original, ah_test, temperature, sampled_centers)
+    action_strong, action_strong_chunk, latent_strong = _select_action_with_latent(
+        strong_agent, obs_dict_batch_original, ah_test, temperature, sampled_centers
+    )
     action_dict = dict()
     action_dict['action'] = action_strong
     action_dict['action_pred'] = action_strong_chunk
@@ -422,8 +453,8 @@ def bidirectional_plus_ema_sampler(strong, weak, prior, obs_dict, ah_count, ah_t
 
 
     # predict
-    action_strong, action_strong_chunk = strong.select_action(obs_dict_batch, ah_test, temperature)
-    action_weak, action_weak_chunk = weak.select_action(obs_dict_batch, ah_test, temperature)
+    action_strong, action_strong_chunk = _select_action_with_chunk(strong, obs_dict_batch, ah_test, temperature)
+    action_weak, action_weak_chunk = _select_action_with_chunk(weak, obs_dict_batch, ah_test, temperature)
     action_strong = action_strong.unsqueeze(1)
     action_weak = action_weak.unsqueeze(1)
 

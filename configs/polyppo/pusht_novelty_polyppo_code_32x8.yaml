@@ -1,0 +1,30 @@
+run:
+  id: polyppo_pusht_novelty_polyppo_code_32x8
+  output_dir: outputs/polyppo/pusht_novelty_polyppo_code_32x8
+  seed: 141000
+  device: cuda
+  gpu_id: 1
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+  temperature: 0.7
+
+train:
+  rollout_path: outputs/polyppo/pusht_rollout_32x8
+  collect_if_missing: true
+  rollout_config: configs/polyppo/pusht_rollout_32x8.yaml
+  lr: 1.0e-5
+  num_updates: 3
+  clip_ratio: 0.2
+  entropy_coef: 0.0
+  value_coef: 0.5
+  kl_coef: 0.0
+  ratio_tolerance: 1.0e-4
+  recompute_batch_size: 1
+  post_update_eval_episodes: 100
+  post_update_eval_batch_size: 50
+  post_update_eval_seed: 150000
+
+polyppo:
+  diversity_kind: code
+  lambda_div: 0.03

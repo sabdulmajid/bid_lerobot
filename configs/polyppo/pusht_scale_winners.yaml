@@ -1,0 +1,15 @@
+run:
+  id: polyppo_pusht_scale_winners
+  output_dir: outputs/polyppo/pusht_scale_winners
+  seed: 130000
+  device: cuda
+  gpu_id: 1
+
+policy:
+  path: ${oc.env:POLYPPO_POLICY_PATH,lerobot/vqbet_pusht}
+
+scale:
+  paired_eval_episodes: 500
+  minimum_if_time_limited: 200
+  max_winners: 3
+  require_small_sweep_win: true
